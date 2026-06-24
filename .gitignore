@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/
+resumes/default/*
+resumes/tailored/*
+!resumes/default/.gitkeep
+!resumes/tailored/.gitkeep
+exports/*
+!exports/.gitkeep
