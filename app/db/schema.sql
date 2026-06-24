@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     easy_apply INTEGER NOT NULL DEFAULT 0,
     score REAL,
     status TEXT DEFAULT 'New',
+    preferred_resume_id INTEGER REFERENCES resumes(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -60,13 +61,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url) WHERE url IS NOT NUL
 
 CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-    resume_id INTEGER REFERENCES resumes(id) ON DELETE SET NULL,
+    job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,
+    company_name TEXT,
+    job_title TEXT,
+    job_url TEXT,
+    source TEXT,
     date_applied TEXT,
-    status TEXT DEFAULT 'Applied',
+    status TEXT DEFAULT 'Saved',
+    resume_id INTEGER REFERENCES resumes(id) ON DELETE SET NULL,
+    resume_path TEXT,
+    salary_offered TEXT,
     recruiter_name TEXT,
     recruiter_contact TEXT,
-    salary_offered TEXT,
     notes TEXT,
     follow_up_date TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -89,5 +95,32 @@ CREATE TABLE IF NOT EXISTS job_scores (
     missing_keywords TEXT,
     reasoning TEXT,
     recommendation TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS search_preferences (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    location_scope TEXT NOT NULL DEFAULT 'all',
+    selected_states TEXT NOT NULL DEFAULT '[]',
+    selected_titles TEXT NOT NULL DEFAULT '[]',
+    date_posted_filter TEXT NOT NULL DEFAULT '7days',
+    remote_only INTEGER NOT NULL DEFAULT 0,
+    fulltime_only INTEGER NOT NULL DEFAULT 1,
+    easy_apply_only INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'Both',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS tailored_resumes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    resume_id INTEGER REFERENCES resumes(id) ON DELETE SET NULL,
+    company TEXT,
+    job_title TEXT,
+    score INTEGER,
+    file_name TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    tailored_text TEXT,
+    source_resume_path TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

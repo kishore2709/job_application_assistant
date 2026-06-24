@@ -3,13 +3,18 @@ from dataclasses import dataclass
 
 @dataclass
 class Application:
-    job_id: int
-    resume_id: int | None = None
+    company_name: str
+    job_title: str
+    job_id: int | None = None
+    job_url: str = ""
+    source: str = ""
     date_applied: str = ""
-    status: str = "Applied"
+    status: str = "Saved"
+    resume_id: int | None = None
+    resume_path: str = ""
+    salary_offered: str = ""
     recruiter_name: str = ""
     recruiter_contact: str = ""
-    salary_offered: str = ""
     notes: str = ""
     follow_up_date: str = ""
     id: int | None = None

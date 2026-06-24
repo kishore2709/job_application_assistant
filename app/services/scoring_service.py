@@ -20,10 +20,14 @@ def score_job(job_id: int, resume_text: str, job_description: str, job_title: st
     score = JobScore(
         job_id=job_id,
         score=int(result.get("score", 0)),
-        matched_keywords=[str(k) for k in (result.get("matched_keywords") or [])],
-        missing_keywords=[str(k) for k in (result.get("missing_keywords") or [])],
-        reasoning=str(result.get("reasoning") or ""),
-        recommendation=str(result.get("recommendation") or ""),
+        matched_keywords=[
+            str(k) for k in (result.get("matched") or result.get("matched_keywords") or [])
+        ],
+        missing_keywords=[
+            str(k) for k in (result.get("missing") or result.get("missing_keywords") or [])
+        ],
+        reasoning=str(result.get("reason") or result.get("reasoning") or ""),
+        recommendation=str(result.get("recommend") or result.get("recommendation") or ""),
     )
 
     ScoreRepository().save(score)

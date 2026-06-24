@@ -1,17 +1,16 @@
-from PyQt6.QtCore import QThread, QUrl, pyqtSignal
+import time
+from datetime import date
+
+from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
-    QButtonGroup,
-    QCheckBox,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QRadioButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -28,18 +27,15 @@ from app.services.claude_service import (
     ClaudeService,
     ClaudeTimeoutError,
 )
-from app.services.job_search_service import (
-    SOURCE_BOTH,
-    SOURCE_JSEARCH,
-    SOURCE_LINKEDIN,
-    SearchOutcome,
-    search_jobs,
-)
+from app.services.job_search_service import SearchOutcome, search_jobs
 from app.services.resume_service import ResumeService
 from app.services.scoring_service import EmptyJobDescriptionError, get_cached_score, score_job
+from app.ui.search_preferences_panel import SearchPreferencesPanel
+from app.ui.tailoring_dialog import TailoringDialog
 from automation.browser_manager import BrowserLaunchError, BrowserManager
 
 RESULT_COLUMNS = ["Title", "Company", "Location", "Source", "Posted", "Match Score", "Status"]
+ESTIMATED_COST_PER_SCORE = 0.003
 
 
 class JobSearchWorker(QThread):
@@ -49,33 +45,112 @@ class JobSearchWorker(QThread):
     finished_search = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, title: str, location: str, source: str, filters: dict, parent=None):
+    def __init__(self, titles: list[str], location: str, source: str, filters: dict, parent=None):
         super().__init__(parent)
-        self.title = title
+        self.titles = titles
         self.location = location
         self.source = source
         self.filters = filters
         self.browser_manager = BrowserManager()
 
     def run(self) -> None:
+        all_jobs = []
+        total_found = 0
+        filtered_out = 0
+        errors = []
+        notice = None
+
         try:
-            outcome = search_jobs(
-                self.title,
-                self.location,
-                self.source,
-                self.filters,
-                browser_manager=self.browser_manager,
-                on_progress=self.progress.emit,
-                on_manual_step_required=self.manual_step_required.emit,
-                on_manual_step_resolved=self.manual_step_resolved.emit,
+            for index, title in enumerate(self.titles):
+                self.progress.emit(f"Searching {title} ({index + 1} of {len(self.titles)})...")
+                outcome = search_jobs(
+                    title,
+                    self.location,
+                    self.source,
+                    self.filters,
+                    browser_manager=self.browser_manager,
+                    on_progress=self.progress.emit,
+                    on_manual_step_required=self.manual_step_required.emit,
+                    on_manual_step_resolved=self.manual_step_resolved.emit,
+                )
+                all_jobs.extend(outcome.jobs)
+                total_found += outcome.total_found
+                filtered_out += outcome.filtered_out
+                if outcome.error:
+                    errors.append(outcome.error)
+                if outcome.notice and notice is None:
+                    notice = outcome.notice
+
+            deduped = {}
+            for job in all_jobs:
+                key = job.id if job.id else job.url
+                deduped[key] = job
+
+            combined_outcome = SearchOutcome(
+                jobs=list(deduped.values()),
+                total_found=total_found,
+                filtered_out=filtered_out,
+                error="; ".join(errors) if errors else None,
+                notice=notice,
             )
-            self.finished_search.emit(outcome)
+            self.finished_search.emit(combined_outcome)
         except BrowserLaunchError as error:
             self.failed.emit(str(error))
         except Exception as error:
             self.failed.emit(f"Something went wrong during the search: {error}")
         finally:
             self.browser_manager.close()
+
+
+class ScoreWorker(QThread):
+    finished_scoring = pyqtSignal(object)
+    failed = pyqtSignal(str, bool)
+
+    def __init__(self, job_id: int, resume_text: str, job_description: str, job_title: str, parent=None):
+        super().__init__(parent)
+        self.job_id = job_id
+        self.resume_text = resume_text
+        self.job_description = job_description
+        self.job_title = job_title
+
+    def run(self) -> None:
+        try:
+            score = score_job(self.job_id, self.resume_text, self.job_description, self.job_title)
+            self.finished_scoring.emit(score)
+        except ClaudeNotConfiguredError as error:
+            self.failed.emit(str(error), False)
+        except EmptyJobDescriptionError as error:
+            self.failed.emit(str(error), False)
+        except ClaudeTimeoutError as error:
+            self.failed.emit(str(error), True)
+        except ClaudeRequestError as error:
+            self.failed.emit(str(error), True)
+        except Exception as error:
+            self.failed.emit(f"Scoring failed: {error}", True)
+
+
+class ScoreAllWorker(QThread):
+    progress = pyqtSignal(str)
+    job_scored = pyqtSignal(object)
+    finished_all = pyqtSignal()
+
+    def __init__(self, jobs: list, resume_text: str, parent=None):
+        super().__init__(parent)
+        self.jobs = jobs
+        self.resume_text = resume_text
+
+    def run(self) -> None:
+        total = len(self.jobs)
+        for index, job in enumerate(self.jobs):
+            self.progress.emit(f"Scoring {index + 1} of {total}...")
+            try:
+                score = score_job(job.id, self.resume_text, job.description, job.title)
+                self.job_scored.emit(score)
+            except Exception:
+                pass
+            if index < total - 1:
+                time.sleep(1)
+        self.finished_all.emit()
 
 
 class SearchTab(QWidget):
@@ -85,21 +160,29 @@ class SearchTab(QWidget):
         self.application_repository = ApplicationRepository()
         self.profile_repository = ProfileRepository()
         self.resume_service = ResumeService()
+        self.claude_service = ClaudeService()
 
         self.worker: JobSearchWorker | None = None
+        self.score_worker: ScoreWorker | None = None
+        self.score_all_worker: ScoreAllWorker | None = None
         self.current_jobs: list = []
         self.selected_job = None
+        self.current_application = None
         self._current_page = 0
         self._append_mode = False
 
         self._build_ui()
-        self._prefill_from_target_roles()
 
     def _build_ui(self) -> None:
         outer_layout = QVBoxLayout(self)
 
-        outer_layout.addWidget(self._build_search_bar())
-        outer_layout.addWidget(self._build_filters_row())
+        self.preferences_panel = SearchPreferencesPanel()
+        outer_layout.addWidget(self.preferences_panel)
+
+        self.search_button = QPushButton("Search")
+        self.search_button.clicked.connect(self._on_search_clicked)
+        outer_layout.addWidget(self.search_button)
+
         outer_layout.addWidget(self._build_status_row())
         outer_layout.addWidget(self._build_manual_step_banner())
 
@@ -110,63 +193,14 @@ class SearchTab(QWidget):
         splitter.setStretchFactor(1, 1)
         outer_layout.addWidget(splitter, 1)
 
+        bottom_row = QHBoxLayout()
         self.load_more_button = QPushButton("Load More Results")
         self.load_more_button.clicked.connect(self._on_load_more_clicked)
-        outer_layout.addWidget(self.load_more_button)
-
-    def _build_search_bar(self) -> QGroupBox:
-        group = QGroupBox("Search")
-        layout = QHBoxLayout()
-
-        self.title_input = QLineEdit()
-        self.title_input.setPlaceholderText("Job title")
-
-        self.location_input = QLineEdit()
-        self.location_input.setText("Remote")
-
-        self.source_linkedin = QRadioButton("LinkedIn")
-        self.source_jsearch = QRadioButton("JSearch")
-        self.source_both = QRadioButton("Both")
-        self.source_both.setChecked(True)
-        self.source_group = QButtonGroup(self)
-        for button in (self.source_linkedin, self.source_jsearch, self.source_both):
-            self.source_group.addButton(button)
-
-        self.search_button = QPushButton("Search")
-        self.search_button.clicked.connect(self._on_search_clicked)
-
-        layout.addWidget(QLabel("Title"))
-        layout.addWidget(self.title_input, 2)
-        layout.addWidget(QLabel("Location"))
-        layout.addWidget(self.location_input, 1)
-        layout.addWidget(self.source_linkedin)
-        layout.addWidget(self.source_jsearch)
-        layout.addWidget(self.source_both)
-        layout.addWidget(self.search_button)
-
-        group.setLayout(layout)
-        return group
-
-    def _build_filters_row(self) -> QGroupBox:
-        group = QGroupBox("Filters")
-        layout = QHBoxLayout()
-
-        self.remote_only_checkbox = QCheckBox("Remote only")
-        self.full_time_only_checkbox = QCheckBox("Full-time only")
-        self.posted_within_7_days_checkbox = QCheckBox("Posted within 7 days")
-        self.easy_apply_only_checkbox = QCheckBox("Easy Apply only")
-
-        for checkbox in (
-            self.remote_only_checkbox,
-            self.full_time_only_checkbox,
-            self.posted_within_7_days_checkbox,
-            self.easy_apply_only_checkbox,
-        ):
-            layout.addWidget(checkbox)
-
-        layout.addStretch()
-        group.setLayout(layout)
-        return group
+        self.score_all_button = QPushButton("Score All")
+        self.score_all_button.clicked.connect(self._on_score_all_clicked)
+        bottom_row.addWidget(self.load_more_button)
+        bottom_row.addWidget(self.score_all_button)
+        outer_layout.addLayout(bottom_row)
 
     def _build_status_row(self) -> QWidget:
         widget = QWidget()
@@ -213,6 +247,11 @@ class SearchTab(QWidget):
         self.detail_company_label = QLabel("")
         self.detail_meta_label = QLabel("")
 
+        layout.addWidget(self.detail_title_label)
+        layout.addWidget(self.detail_company_label)
+        layout.addWidget(self.detail_meta_label)
+        layout.addWidget(self._build_score_panel())
+
         self.detail_description = QTextEdit()
         self.detail_description.setReadOnly(True)
 
@@ -229,72 +268,132 @@ class SearchTab(QWidget):
         self.save_to_tracker_button.setEnabled(False)
         self.save_to_tracker_button.clicked.connect(self._on_save_to_tracker_clicked)
 
+        self.mark_applied_button = QPushButton("Mark as Applied")
+        self.mark_applied_button.setEnabled(False)
+        self.mark_applied_button.clicked.connect(self._on_mark_applied_clicked)
+
         button_row.addWidget(self.apply_button)
         button_row.addWidget(self.score_button)
         button_row.addWidget(self.save_to_tracker_button)
+        button_row.addWidget(self.mark_applied_button)
 
-        layout.addWidget(self.detail_title_label)
-        layout.addWidget(self.detail_company_label)
-        layout.addWidget(self.detail_meta_label)
         layout.addWidget(self.detail_description, 1)
         layout.addLayout(button_row)
         return panel
 
-    def _prefill_from_target_roles(self) -> None:
-        profile = self.profile_repository.get()
-        active_roles = [role for role in profile.target_roles if role.is_active]
-        if active_roles:
-            self.title_input.setText(active_roles[0].role_title)
+    def _build_score_panel(self) -> QGroupBox:
+        group = QGroupBox("Match Score")
+        layout = QVBoxLayout()
 
-    def _selected_source(self) -> str:
-        if self.source_linkedin.isChecked():
-            return SOURCE_LINKEDIN
-        if self.source_jsearch.isChecked():
-            return SOURCE_JSEARCH
-        return SOURCE_BOTH
+        self.score_value_label = QLabel("")
+        self.score_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.score_value_label.setStyleSheet("font-size: 28px; font-weight: bold; padding: 6px;")
+        self.score_value_label.hide()
 
-    def _collect_filters(self) -> dict:
-        return {
-            "remote_only": self.remote_only_checkbox.isChecked(),
-            "full_time_only": self.full_time_only_checkbox.isChecked(),
-            "posted_within_7_days": self.posted_within_7_days_checkbox.isChecked(),
-            "easy_apply_only": self.easy_apply_only_checkbox.isChecked(),
-        }
+        self.score_status_label = QLabel("")
+        self.score_status_label.setWordWrap(True)
+
+        self.score_progress_bar = QProgressBar()
+        self.score_progress_bar.setRange(0, 0)
+        self.score_progress_bar.hide()
+
+        self.retry_score_button = QPushButton("Retry")
+        self.retry_score_button.clicked.connect(self._on_retry_score_clicked)
+        self.retry_score_button.hide()
+
+        self.matched_keywords_header = QLabel("Matched Keywords")
+        self.matched_keywords_header.setStyleSheet("font-weight: bold;")
+        self.matched_keywords_label = QLabel("")
+        self.matched_keywords_label.setWordWrap(True)
+        self.matched_keywords_label.setTextFormat(Qt.TextFormat.RichText)
+
+        self.missing_keywords_header = QLabel("Missing Keywords")
+        self.missing_keywords_header.setStyleSheet("font-weight: bold;")
+        self.missing_keywords_label = QLabel("")
+        self.missing_keywords_label.setWordWrap(True)
+        self.missing_keywords_label.setTextFormat(Qt.TextFormat.RichText)
+
+        self.reasoning_header = QLabel("Reasoning")
+        self.reasoning_header.setStyleSheet("font-weight: bold;")
+        self.reasoning_label = QLabel("")
+        self.reasoning_label.setWordWrap(True)
+
+        self.recommendation_header = QLabel("Recommendation")
+        self.recommendation_header.setStyleSheet("font-weight: bold;")
+        self.recommendation_label = QLabel("")
+        self.recommendation_label.setWordWrap(True)
+
+        self.tailor_resume_button = QPushButton("Tailor Resume")
+        self.tailor_resume_button.setStyleSheet("font-weight: bold; padding: 6px;")
+        self.tailor_resume_button.clicked.connect(self._on_tailor_resume_clicked)
+        self.tailor_resume_button.hide()
+
+        self.good_resume_label = QLabel("Resume looks good for this job — apply with default resume")
+        self.good_resume_label.setWordWrap(True)
+        self.good_resume_label.setStyleSheet("font-weight: bold; color: #66bb6a;")
+        self.good_resume_label.hide()
+
+        for widget in (
+            self.score_value_label,
+            self.score_status_label,
+            self.score_progress_bar,
+            self.retry_score_button,
+            self.matched_keywords_header,
+            self.matched_keywords_label,
+            self.missing_keywords_header,
+            self.missing_keywords_label,
+            self.reasoning_header,
+            self.reasoning_label,
+            self.recommendation_header,
+            self.recommendation_label,
+            self.tailor_resume_button,
+            self.good_resume_label,
+        ):
+            layout.addWidget(widget)
+
+        self._set_score_detail_visible(False)
+        group.setLayout(layout)
+        self.score_group = group
+        return group
 
     def _on_search_clicked(self) -> None:
         if self.worker and self.worker.isRunning():
             return
 
-        title = self.title_input.text().strip()
-        if not title:
-            QMessageBox.warning(self, "Missing Job Title", "Please enter a job title to search for.")
+        titles = self.preferences_panel.get_selected_titles()
+        if not titles:
+            QMessageBox.warning(
+                self, "No Titles Selected", "Please select at least one job title to search for."
+            )
             return
 
-        location = self.location_input.text().strip() or "Remote"
-        filters = self._collect_filters()
+        location = self.preferences_panel.get_location_text()
+        filters = self.preferences_panel.get_filters()
+        source = self.preferences_panel.get_source()
         self._current_page = 0
         filters["page"] = self._current_page
 
         self.current_jobs = []
         self.results_table.setRowCount(0)
-        self._start_search(title, location, self._selected_source(), filters, append=False)
+        self._start_search(titles, location, source, filters, append=False)
 
     def _on_load_more_clicked(self) -> None:
         if self.worker and self.worker.isRunning():
             return
 
-        title = self.title_input.text().strip()
-        if not title:
+        titles = self.preferences_panel.get_selected_titles()
+        if not titles:
             return
 
-        location = self.location_input.text().strip() or "Remote"
-        filters = self._collect_filters()
+        location = self.preferences_panel.get_location_text()
+        filters = self.preferences_panel.get_filters()
+        source = self.preferences_panel.get_source()
         self._current_page += 1
         filters["page"] = self._current_page
 
-        self._start_search(title, location, self._selected_source(), filters, append=True)
+        self._start_search(titles, location, source, filters, append=True)
 
-    def _start_search(self, title: str, location: str, source: str, filters: dict, append: bool) -> None:
+    def _start_search(self, titles: list[str], location: str, source: str, filters: dict, append: bool) -> None:
         self._append_mode = append
         self.search_button.setEnabled(False)
         self.search_button.setText("Searching...")
@@ -302,7 +401,7 @@ class SearchTab(QWidget):
         self.progress_bar.show()
         self.status_label.setText("Starting search...")
 
-        self.worker = JobSearchWorker(title, location, source, filters)
+        self.worker = JobSearchWorker(titles, location, source, filters)
         self.worker.progress.connect(self._on_progress)
         self.worker.manual_step_required.connect(self._on_manual_step_required)
         self.worker.manual_step_resolved.connect(self._on_manual_step_resolved)
@@ -344,7 +443,7 @@ class SearchTab(QWidget):
 
         self.results_count_label.setText(
             f"Showing {len(self.current_jobs)} results "
-            f"({outcome.total_found} found this page, {outcome.filtered_out} filtered out)"
+            f"({outcome.total_found} found across title searches, {outcome.filtered_out} filtered out)"
         )
 
     def _on_search_failed(self, message: str) -> None:
@@ -363,15 +462,21 @@ class SearchTab(QWidget):
             self.current_jobs = []
             self.results_table.setRowCount(0)
 
+        existing_ids = {job.id for job in self.current_jobs if job.id}
         for job in jobs:
+            if job.id and job.id in existing_ids:
+                continue
+            existing_ids.add(job.id)
             self.current_jobs.append(job)
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
-            score_text = "Pending" if job.score is None else f"{job.score:.1f}"
+            score_text = "Pending" if job.score is None else str(int(job.score))
             for column, value in enumerate(
                 [job.title, job.company, job.location, job.source, job.posted_date, score_text, job.status]
             ):
                 self.results_table.setItem(row, column, QTableWidgetItem(value))
+            if job.score is not None:
+                self._colorize_score_cell(row, int(job.score))
 
     def _on_row_selected(self) -> None:
         row = self.results_table.currentRow()
@@ -387,16 +492,257 @@ class SearchTab(QWidget):
         self.detail_description.setPlainText(job.description or "(No description available.)")
         self.apply_button.setEnabled(bool(job.url))
         self.score_button.setEnabled(True)
-        self.save_to_tracker_button.setEnabled(bool(job.id))
+        self._update_tracker_buttons(job)
+
+        self._reset_score_panel()
+        cached_score = get_cached_score(job.id) if job.id else None
+        if cached_score is not None:
+            self._render_score(cached_score)
+        elif job.description and job.description.strip():
+            self._trigger_scoring(job)
+
+    def _update_tracker_buttons(self, job) -> None:
+        self.current_application = (
+            self.application_repository.get_by_job_id(job.id) if job.id else None
+        )
+        if self.current_application is not None:
+            self.save_to_tracker_button.setText("Saved ✓")
+            self.save_to_tracker_button.setEnabled(False)
+            self.mark_applied_button.setEnabled(self.current_application.status == "Saved")
+        else:
+            self.save_to_tracker_button.setText("Save to Tracker")
+            self.save_to_tracker_button.setEnabled(bool(job.id))
+            self.mark_applied_button.setEnabled(False)
 
     def _on_apply_clicked(self) -> None:
         if self.selected_job and self.selected_job.url:
             QDesktopServices.openUrl(QUrl(self.selected_job.url))
 
     def _on_score_clicked(self) -> None:
-        QMessageBox.information(
-            self, "Coming Soon", "Claude-based job scoring will be available in Phase 4."
+        if not self.selected_job:
+            return
+        cached_score = get_cached_score(self.selected_job.id) if self.selected_job.id else None
+        if cached_score is not None:
+            self._render_score(cached_score)
+            return
+        self._trigger_scoring(self.selected_job)
+
+    def _on_retry_score_clicked(self) -> None:
+        if self.selected_job:
+            self._trigger_scoring(self.selected_job)
+
+    def _on_tailor_resume_clicked(self) -> None:
+        if not self.selected_job:
+            return
+
+        default_resume = self.resume_service.get_default_resume()
+        if default_resume is None:
+            QMessageBox.warning(self, "No Resume", "Please upload your resume in Settings first")
+            return
+
+        job = self.selected_job
+        if not job.description or len(job.description.strip()) < 100:
+            QMessageBox.warning(
+                self,
+                "Job Description Too Short",
+                "This job's description is too short to tailor a resume against "
+                "(needs at least 100 characters).",
+            )
+            return
+
+        profile = self.profile_repository.get()
+        role_description = self._matching_role_description(profile, job.title)
+
+        dialog = TailoringDialog(
+            job, default_resume.file_path, role_description, profile, job.score, parent=self
         )
+        dialog.exec()
+
+    @staticmethod
+    def _matching_role_description(profile, job_title: str) -> str:
+        active_roles = [role for role in profile.target_roles if role.is_active]
+        job_title_lower = job_title.lower()
+        for role in active_roles:
+            if role.role_title.lower() in job_title_lower or job_title_lower in role.role_title.lower():
+                return role.role_description
+        return active_roles[0].role_description if active_roles else ""
+
+    def _trigger_scoring(self, job) -> None:
+        if self.score_worker is not None and self.score_worker.isRunning():
+            return
+
+        if not job.description or not job.description.strip():
+            QMessageBox.information(
+                self, "No Description", "No job description available to score against"
+            )
+            return
+
+        default_resume = self.resume_service.get_default_resume()
+        if default_resume is None:
+            QMessageBox.warning(self, "No Resume", "Please upload your resume in Settings first")
+            return
+
+        if not self.claude_service.is_configured():
+            QMessageBox.warning(
+                self, "Claude Not Configured", "Add ANTHROPIC_API_KEY to .env to enable scoring"
+            )
+            return
+
+        resume_text = self.resume_service.get_resume_text(default_resume.file_path)
+        self._show_scoring_state()
+
+        self.score_worker = ScoreWorker(job.id, resume_text, job.description, job.title)
+        self.score_worker.finished_scoring.connect(self._on_score_finished)
+        self.score_worker.failed.connect(self._on_score_failed)
+        self.score_worker.start()
+
+    def _show_scoring_state(self) -> None:
+        self._set_score_detail_visible(False)
+        self.score_value_label.hide()
+        self.retry_score_button.hide()
+        self.tailor_resume_button.hide()
+        self.good_resume_label.hide()
+        self.score_progress_bar.show()
+        self.score_status_label.setText("Scoring with Claude...")
+
+    def _on_score_finished(self, score: JobScore) -> None:
+        self.score_progress_bar.hide()
+        self._render_score(score)
+        self._update_table_score_cell(score)
+
+    def _on_score_failed(self, message: str, retryable: bool) -> None:
+        self.score_progress_bar.hide()
+        self.score_value_label.hide()
+        self.score_status_label.setText(message)
+        self.retry_score_button.setVisible(retryable)
+
+    def _reset_score_panel(self) -> None:
+        self.score_progress_bar.hide()
+        self.retry_score_button.hide()
+        self.score_value_label.hide()
+        self.tailor_resume_button.hide()
+        self.good_resume_label.hide()
+        self.score_status_label.setText("")
+        self._set_score_detail_visible(False)
+
+    def _set_score_detail_visible(self, visible: bool) -> None:
+        for widget in (
+            self.matched_keywords_header,
+            self.matched_keywords_label,
+            self.missing_keywords_header,
+            self.missing_keywords_label,
+            self.reasoning_header,
+            self.reasoning_label,
+            self.recommendation_header,
+            self.recommendation_label,
+        ):
+            widget.setVisible(visible)
+
+    def _render_score(self, score: JobScore) -> None:
+        self.score_progress_bar.hide()
+        self.retry_score_button.hide()
+        self.score_status_label.setText("")
+
+        background, text_color = self._score_colors(score.score)
+        self.score_value_label.setText(f"{score.score}")
+        self.score_value_label.setStyleSheet(
+            f"font-size: 28px; font-weight: bold; padding: 6px; "
+            f"background-color: {background}; color: {text_color}; border-radius: 6px;"
+        )
+        self.score_value_label.show()
+
+        self.matched_keywords_label.setText(
+            self._render_keyword_pills(score.matched_keywords, "#2e7d32", "#ffffff")
+        )
+        self.missing_keywords_label.setText(
+            self._render_keyword_pills(score.missing_keywords, "#c62828", "#ffffff")
+        )
+        self.reasoning_label.setText(score.reasoning or "(No reasoning provided.)")
+        self.recommendation_label.setText(score.recommendation or "(No recommendation provided.)")
+        self._set_score_detail_visible(True)
+
+        if score.score >= 90:
+            self.tailor_resume_button.hide()
+            self.good_resume_label.show()
+        else:
+            self.good_resume_label.hide()
+            self.tailor_resume_button.show()
+
+    @staticmethod
+    def _score_colors(score: int) -> tuple[str, str]:
+        if score >= 90:
+            return "#2e7d32", "#ffffff"
+        if score >= 70:
+            return "#f9a825", "#1e1e1e"
+        return "#c62828", "#ffffff"
+
+    @staticmethod
+    def _render_keyword_pills(keywords: list[str], background: str, text_color: str) -> str:
+        if not keywords:
+            return "<i>None</i>"
+        style = (
+            f"background-color:{background}; color:{text_color}; "
+            "padding:2px 8px; border-radius:10px;"
+        )
+        return "&nbsp;".join(f'<span style="{style}">{keyword}</span>' for keyword in keywords)
+
+    def _update_table_score_cell(self, score: JobScore) -> None:
+        for row, job in enumerate(self.current_jobs):
+            if job.id == score.job_id:
+                job.score = score.score
+                self.results_table.setItem(row, 5, QTableWidgetItem(str(score.score)))
+                self._colorize_score_cell(row, score.score)
+                break
+
+    def _colorize_score_cell(self, row: int, score: int) -> None:
+        background, text_color = self._score_colors(score)
+        item = self.results_table.item(row, 5)
+        if item is not None:
+            item.setBackground(QColor(background))
+            item.setForeground(QColor(text_color))
+
+    def _on_score_all_clicked(self) -> None:
+        if self.score_all_worker is not None and self.score_all_worker.isRunning():
+            return
+
+        unscored_jobs = [job for job in self.current_jobs if job.id and job.score is None]
+        if not unscored_jobs:
+            QMessageBox.information(self, "Score All", "All jobs already have a score.")
+            return
+
+        default_resume = self.resume_service.get_default_resume()
+        if default_resume is None:
+            QMessageBox.warning(self, "No Resume", "Please upload your resume in Settings first")
+            return
+
+        if not self.claude_service.is_configured():
+            QMessageBox.warning(
+                self, "Claude Not Configured", "Add ANTHROPIC_API_KEY to .env to enable scoring"
+            )
+            return
+
+        estimated_cost = len(unscored_jobs) * ESTIMATED_COST_PER_SCORE
+        confirmation = QMessageBox.question(
+            self,
+            "Score All",
+            f"Score {len(unscored_jobs)} unscored jobs?\n"
+            f"Estimated cost: ~${estimated_cost:.2f} for {len(unscored_jobs)} jobs",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        resume_text = self.resume_service.get_resume_text(default_resume.file_path)
+        self.score_all_button.setEnabled(False)
+        self.score_all_worker = ScoreAllWorker(unscored_jobs, resume_text)
+        self.score_all_worker.progress.connect(self._on_progress)
+        self.score_all_worker.job_scored.connect(self._update_table_score_cell)
+        self.score_all_worker.finished_all.connect(self._on_score_all_finished)
+        self.score_all_worker.start()
+
+    def _on_score_all_finished(self) -> None:
+        self.score_all_button.setEnabled(True)
+        self.status_label.setText("Done scoring all jobs.")
 
     def _on_save_to_tracker_clicked(self) -> None:
         if not self.selected_job or not self.selected_job.id:
@@ -407,9 +753,24 @@ class SearchTab(QWidget):
             QMessageBox.warning(self, "No Resume", "Please upload your resume in Settings first")
             return
 
-        self.application_repository.save_to_tracker(self.selected_job.id, default_resume.id)
+        self.application_repository.save_to_tracker(
+            self.selected_job, default_resume.id, default_resume.file_path
+        )
         self.selected_job.status = "Saved"
         row = self.results_table.currentRow()
         if row >= 0:
             self.results_table.setItem(row, 6, QTableWidgetItem("Saved"))
+        self._update_tracker_buttons(self.selected_job)
         QMessageBox.information(self, "Saved", "Job saved to your application tracker.")
+
+    def _on_mark_applied_clicked(self) -> None:
+        if not self.current_application:
+            return
+
+        self.application_repository.mark_applied(self.current_application.id, date.today().isoformat())
+        self.selected_job.status = "Applied"
+        row = self.results_table.currentRow()
+        if row >= 0:
+            self.results_table.setItem(row, 6, QTableWidgetItem("Applied"))
+        self._update_tracker_buttons(self.selected_job)
+        QMessageBox.information(self, "Marked as Applied", "Application status updated to Applied.")

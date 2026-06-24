@@ -12,6 +12,14 @@ RAPIDAPI_SIGNUP_MESSAGE = (
     "Get it free at rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch"
 )
 
+DATE_POSTED_TO_JSEARCH = {
+    "any": "all",
+    "today": "today",
+    "3days": "3days",
+    "7days": "week",
+    "30days": "month",
+}
+
 
 class JSearchNotConfiguredError(Exception):
     pass
@@ -53,12 +61,13 @@ def search_jsearch_jobs(
     # LinkedIn's offset-based pagination does. We still send `page` in case
     # it's honored, but don't rely on it.
     query = f"{title} in {location}" if location else title
+    date_posted_filter = filters.get("date_posted_filter", "any")
     params = {
         "query": query,
         "page": str(page_number + 1),
         "num_pages": "1",
         "country": "us",
-        "date_posted": "week" if filters.get("posted_within_7_days") else "all",
+        "date_posted": DATE_POSTED_TO_JSEARCH.get(date_posted_filter, "all"),
         "remote_jobs_only": "false",
     }
     if filters.get("full_time_only"):

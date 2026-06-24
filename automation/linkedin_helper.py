@@ -13,6 +13,13 @@ POSTED_DATE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+DATE_POSTED_TO_LINKEDIN_TPR = {
+    "today": "r86400",
+    "3days": "r259200",
+    "7days": "r604800",
+    "30days": "r2592000",
+}
+
 
 def _noop(_message: str) -> None:
     return None
@@ -53,9 +60,11 @@ def search_linkedin_jobs(
 
     start = page_number * 25
     remote_param = "&f_WT=2" if filters.get("remote_only") else ""
+    tpr_value = DATE_POSTED_TO_LINKEDIN_TPR.get(filters.get("date_posted_filter", "any"))
+    date_posted_param = f"&f_TPR={tpr_value}" if tpr_value else ""
     url = (
         f"{LINKEDIN_JOBS_URL}?keywords={quote_plus(title)}"
-        f"&location={quote_plus(location)}&start={start}{remote_param}"
+        f"&location={quote_plus(location)}&start={start}{remote_param}{date_posted_param}"
     )
     if not browser_manager.safe_goto(page, url):
         on_progress("LinkedIn is taking a while to load — continuing anyway...")

@@ -16,12 +16,12 @@ def ensure_app_directories() -> None:
 def copy_resume_to_default(source_path: str) -> Path:
     ensure_app_directories()
     source = Path(source_path)
-    destination = _unique_destination(RESUMES_DEFAULT_DIR, source.name)
+    destination = unique_path(RESUMES_DEFAULT_DIR, source.name)
     shutil.copy2(source, destination)
     return destination
 
 
-def _unique_destination(directory: Path, file_name: str) -> Path:
+def unique_path(directory: Path, file_name: str) -> Path:
     candidate = directory / file_name
     stem, suffix = candidate.stem, candidate.suffix
     counter = 1

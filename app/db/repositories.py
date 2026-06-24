@@ -6,6 +6,8 @@ from app.models.job import Job
 from app.models.profile import BlacklistCompany, ProfileSettings, TargetRole
 from app.models.resume import Resume
 from app.models.score import JobScore
+from app.models.search_preferences import SearchPreferences
+from app.models.tailored_resume import TailoredResume
 from app.utils.constants import DEFAULT_BLACKLISTED_COMPANIES
 
 
@@ -294,6 +296,16 @@ class JobRepository:
         finally:
             connection.close()
 
+    def set_preferred_resume(self, job_id: int, resume_id: int) -> None:
+        connection = get_connection()
+        try:
+            connection.execute(
+                "UPDATE jobs SET preferred_resume_id = ? WHERE id = ?", (resume_id, job_id)
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     @staticmethod
     def _row_to_job(row) -> Job:
         return Job(
@@ -309,29 +321,144 @@ class JobRepository:
             easy_apply=bool(row["easy_apply"]),
             score=row["score"],
             status=row["status"] or "New",
+            preferred_resume_id=row["preferred_resume_id"],
             created_at=row["created_at"],
         )
 
 
 class ApplicationRepository:
-    def save_to_tracker(self, job_id: int, resume_id: int | None = None) -> int:
+    def save_to_tracker(self, job, resume_id: int | None = None, resume_path: str = "") -> int:
         connection = get_connection()
         try:
             existing = connection.execute(
-                "SELECT id FROM applications WHERE job_id = ?", (job_id,)
+                "SELECT id FROM applications WHERE job_id = ?", (job.id,)
             ).fetchone()
             if existing:
                 return existing["id"]
 
             cursor = connection.execute(
-                "INSERT INTO applications (job_id, resume_id, status) VALUES (?, ?, ?)",
-                (job_id, resume_id, "Saved"),
+                """
+                INSERT INTO applications (
+                    job_id, company_name, job_title, job_url, source,
+                    status, resume_id, resume_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job.id,
+                    job.company,
+                    job.title,
+                    job.url,
+                    job.source,
+                    "Saved",
+                    resume_id,
+                    resume_path,
+                ),
             )
-            connection.execute(
-                "UPDATE jobs SET status = 'Saved' WHERE id = ?", (job_id,)
+            connection.execute("UPDATE jobs SET status = 'Saved' WHERE id = ?", (job.id,))
+            connection.commit()
+            return cursor.lastrowid
+        finally:
+            connection.close()
+
+    def get_by_job_id(self, job_id: int) -> Application | None:
+        connection = get_connection()
+        try:
+            row = connection.execute(
+                "SELECT * FROM applications WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            return self._row_to_application(row) if row else None
+        finally:
+            connection.close()
+
+    def get_by_id(self, application_id: int) -> Application | None:
+        connection = get_connection()
+        try:
+            row = connection.execute(
+                "SELECT * FROM applications WHERE id = ?", (application_id,)
+            ).fetchone()
+            return self._row_to_application(row) if row else None
+        finally:
+            connection.close()
+
+    def create(self, application: Application) -> int:
+        connection = get_connection()
+        try:
+            cursor = connection.execute(
+                """
+                INSERT INTO applications (
+                    job_id, company_name, job_title, job_url, source,
+                    date_applied, status, resume_id, resume_path,
+                    salary_offered, recruiter_name, recruiter_contact,
+                    notes, follow_up_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    application.job_id,
+                    application.company_name,
+                    application.job_title,
+                    application.job_url,
+                    application.source,
+                    application.date_applied,
+                    application.status,
+                    application.resume_id,
+                    application.resume_path,
+                    application.salary_offered,
+                    application.recruiter_name,
+                    application.recruiter_contact,
+                    application.notes,
+                    application.follow_up_date,
+                ),
             )
             connection.commit()
             return cursor.lastrowid
+        finally:
+            connection.close()
+
+    def update(self, application: Application) -> None:
+        connection = get_connection()
+        try:
+            connection.execute(
+                """
+                UPDATE applications SET
+                    company_name = ?, job_title = ?, job_url = ?, source = ?,
+                    date_applied = ?, status = ?, resume_id = ?, resume_path = ?,
+                    salary_offered = ?, recruiter_name = ?, recruiter_contact = ?,
+                    notes = ?, follow_up_date = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (
+                    application.company_name,
+                    application.job_title,
+                    application.job_url,
+                    application.source,
+                    application.date_applied,
+                    application.status,
+                    application.resume_id,
+                    application.resume_path,
+                    application.salary_offered,
+                    application.recruiter_name,
+                    application.recruiter_contact,
+                    application.notes,
+                    application.follow_up_date,
+                    application.id,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def mark_applied(self, application_id: int, date_applied: str) -> None:
+        connection = get_connection()
+        try:
+            connection.execute(
+                """
+                UPDATE applications SET status = 'Applied', date_applied = ?,
+                    updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (date_applied, application_id),
+            )
+            connection.commit()
         finally:
             connection.close()
 
@@ -341,25 +468,31 @@ class ApplicationRepository:
             rows = connection.execute(
                 "SELECT * FROM applications ORDER BY created_at DESC"
             ).fetchall()
-            return [
-                Application(
-                    id=row["id"],
-                    job_id=row["job_id"],
-                    resume_id=row["resume_id"],
-                    date_applied=row["date_applied"] or "",
-                    status=row["status"] or "Applied",
-                    recruiter_name=row["recruiter_name"] or "",
-                    recruiter_contact=row["recruiter_contact"] or "",
-                    salary_offered=row["salary_offered"] or "",
-                    notes=row["notes"] or "",
-                    follow_up_date=row["follow_up_date"] or "",
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                )
-                for row in rows
-            ]
+            return [self._row_to_application(row) for row in rows]
         finally:
             connection.close()
+
+    @staticmethod
+    def _row_to_application(row) -> Application:
+        return Application(
+            id=row["id"],
+            job_id=row["job_id"],
+            company_name=row["company_name"] or "",
+            job_title=row["job_title"] or "",
+            job_url=row["job_url"] or "",
+            source=row["source"] or "",
+            date_applied=row["date_applied"] or "",
+            status=row["status"] or "Saved",
+            resume_id=row["resume_id"],
+            resume_path=row["resume_path"] or "",
+            salary_offered=row["salary_offered"] or "",
+            recruiter_name=row["recruiter_name"] or "",
+            recruiter_contact=row["recruiter_contact"] or "",
+            notes=row["notes"] or "",
+            follow_up_date=row["follow_up_date"] or "",
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
 
 
 class ScoreRepository:
@@ -412,3 +545,188 @@ class ScoreRepository:
             recommendation=row["recommendation"] or "",
             created_at=row["created_at"],
         )
+
+
+class TailoredResumeRepository:
+    def save(self, tailored: TailoredResume) -> int:
+        connection = get_connection()
+        try:
+            cursor = connection.execute(
+                """
+                INSERT INTO tailored_resumes (
+                    job_id, resume_id, company, job_title, score,
+                    file_name, file_path, tailored_text, source_resume_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tailored.job_id,
+                    tailored.resume_id,
+                    tailored.company,
+                    tailored.job_title,
+                    tailored.score,
+                    tailored.file_name,
+                    tailored.file_path,
+                    tailored.tailored_text,
+                    tailored.source_resume_path,
+                ),
+            )
+            connection.commit()
+            return cursor.lastrowid
+        finally:
+            connection.close()
+
+    def list_all(self) -> list[TailoredResume]:
+        connection = get_connection()
+        try:
+            rows = connection.execute(
+                "SELECT * FROM tailored_resumes ORDER BY created_at DESC"
+            ).fetchall()
+            return [self._row_to_tailored_resume(row) for row in rows]
+        finally:
+            connection.close()
+
+    def get_by_id(self, tailored_resume_id: int) -> TailoredResume | None:
+        connection = get_connection()
+        try:
+            row = connection.execute(
+                "SELECT * FROM tailored_resumes WHERE id = ?", (tailored_resume_id,)
+            ).fetchone()
+            return self._row_to_tailored_resume(row) if row else None
+        finally:
+            connection.close()
+
+    def update_text_and_file(self, tailored_resume_id: int, text: str, file_path: str) -> None:
+        connection = get_connection()
+        try:
+            connection.execute(
+                "UPDATE tailored_resumes SET tailored_text = ?, file_path = ? WHERE id = ?",
+                (text, file_path, tailored_resume_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def delete(self, tailored_resume_id: int) -> None:
+        connection = get_connection()
+        try:
+            connection.execute(
+                "DELETE FROM tailored_resumes WHERE id = ?", (tailored_resume_id,)
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _row_to_tailored_resume(row) -> TailoredResume:
+        return TailoredResume(
+            id=row["id"],
+            job_id=row["job_id"],
+            resume_id=row["resume_id"],
+            company=row["company"] or "",
+            job_title=row["job_title"] or "",
+            score=row["score"],
+            file_name=row["file_name"],
+            file_path=row["file_path"],
+            tailored_text=row["tailored_text"] or "",
+            source_resume_path=row["source_resume_path"] or "",
+            created_at=row["created_at"],
+        )
+
+
+class TargetRoleRepository:
+    def list_active(self) -> list[TargetRole]:
+        connection = get_connection()
+        try:
+            rows = connection.execute(
+                "SELECT * FROM target_roles WHERE is_active = 1 ORDER BY id"
+            ).fetchall()
+            return [
+                TargetRole(
+                    id=row["id"],
+                    role_title=row["role_title"],
+                    role_description=row["role_description"] or "",
+                    is_active=bool(row["is_active"]),
+                )
+                for row in rows
+            ]
+        finally:
+            connection.close()
+
+    def add(self, role_title: str, role_description: str = "") -> int:
+        connection = get_connection()
+        try:
+            existing = connection.execute(
+                "SELECT id FROM target_roles WHERE role_title = ? COLLATE NOCASE",
+                (role_title,),
+            ).fetchone()
+            if existing:
+                return existing["id"]
+
+            cursor = connection.execute(
+                "INSERT INTO target_roles (role_title, role_description, is_active) VALUES (?, ?, 1)",
+                (role_title, role_description),
+            )
+            connection.commit()
+            return cursor.lastrowid
+        finally:
+            connection.close()
+
+
+class SearchPreferencesRepository:
+    def get(self) -> SearchPreferences:
+        connection = get_connection()
+        try:
+            row = connection.execute(
+                "SELECT * FROM search_preferences WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                return SearchPreferences()
+            return SearchPreferences(
+                location_scope=row["location_scope"] or "all",
+                selected_states=json.loads(row["selected_states"] or "[]"),
+                selected_titles=json.loads(row["selected_titles"] or "[]"),
+                date_posted_filter=row["date_posted_filter"] or "7days",
+                remote_only=bool(row["remote_only"]),
+                fulltime_only=bool(row["fulltime_only"]),
+                easy_apply_only=bool(row["easy_apply_only"]),
+                source=row["source"] or "Both",
+                updated_at=row["updated_at"],
+            )
+        finally:
+            connection.close()
+
+    def save(self, preferences: SearchPreferences) -> None:
+        connection = get_connection()
+        try:
+            connection.execute(
+                """
+                INSERT INTO search_preferences (
+                    id, location_scope, selected_states, selected_titles,
+                    date_posted_filter, remote_only, fulltime_only,
+                    easy_apply_only, source, updated_at
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(id) DO UPDATE SET
+                    location_scope = excluded.location_scope,
+                    selected_states = excluded.selected_states,
+                    selected_titles = excluded.selected_titles,
+                    date_posted_filter = excluded.date_posted_filter,
+                    remote_only = excluded.remote_only,
+                    fulltime_only = excluded.fulltime_only,
+                    easy_apply_only = excluded.easy_apply_only,
+                    source = excluded.source,
+                    updated_at = datetime('now')
+                """,
+                (
+                    preferences.location_scope,
+                    json.dumps(preferences.selected_states),
+                    json.dumps(preferences.selected_titles),
+                    preferences.date_posted_filter,
+                    int(preferences.remote_only),
+                    int(preferences.fulltime_only),
+                    int(preferences.easy_apply_only),
+                    preferences.source,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()

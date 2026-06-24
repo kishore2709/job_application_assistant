@@ -14,5 +14,6 @@ class Job:
     easy_apply: bool = False
     score: float | None = None
     status: str = "New"
+    preferred_resume_id: int | None = None
     id: int | None = None
     created_at: str = ""

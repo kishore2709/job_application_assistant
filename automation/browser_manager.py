@@ -49,6 +49,9 @@ class BrowserManager:
         self._resume_event = threading.Event()
 
     def launch(self) -> BrowserContext:
+        if self._context is not None:
+            return self._context
+
         try:
             BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
             self._playwright = sync_playwright().start()
