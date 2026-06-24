@@ -1,9 +1,12 @@
+import shutil
 import time
 from datetime import date
 
 from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices
 from PyQt6.QtWidgets import (
+    QFileDialog,
+    QGraphicsDropShadowEffect,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -19,7 +22,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.db.repositories import ApplicationRepository, JobRepository, ProfileRepository
+from app.db.repositories import (
+    ApplicationRepository,
+    JobRepository,
+    ProfileRepository,
+    TailoredResumeRepository,
+)
 from app.models.score import JobScore
 from app.services.claude_service import (
     ClaudeNotConfiguredError,
@@ -27,14 +35,16 @@ from app.services.claude_service import (
     ClaudeService,
     ClaudeTimeoutError,
 )
-from app.services.job_search_service import SearchOutcome, search_jobs
+from app.services.job_search_service import SearchOutcome, detect_sponsorship_restriction, search_jobs
 from app.services.resume_service import ResumeService
 from app.services.scoring_service import EmptyJobDescriptionError, get_cached_score, score_job
 from app.ui.search_preferences_panel import SearchPreferencesPanel
 from app.ui.tailoring_dialog import TailoringDialog
+from app.ui.theme import SCORE_COLORS
 from automation.browser_manager import BrowserLaunchError, BrowserManager
 
 RESULT_COLUMNS = ["Title", "Company", "Location", "Source", "Posted", "Match Score", "Status"]
+RESULT_COLUMN_WIDTHS = [200, 150, 130, 80, 100, 90, 80]
 ESTIMATED_COST_PER_SCORE = 0.003
 
 
@@ -57,6 +67,7 @@ class JobSearchWorker(QThread):
         all_jobs = []
         total_found = 0
         filtered_out = 0
+        sponsorship_hidden_count = 0
         errors = []
         notice = None
 
@@ -76,6 +87,7 @@ class JobSearchWorker(QThread):
                 all_jobs.extend(outcome.jobs)
                 total_found += outcome.total_found
                 filtered_out += outcome.filtered_out
+                sponsorship_hidden_count += outcome.sponsorship_hidden_count
                 if outcome.error:
                     errors.append(outcome.error)
                 if outcome.notice and notice is None:
@@ -90,6 +102,7 @@ class JobSearchWorker(QThread):
                 jobs=list(deduped.values()),
                 total_found=total_found,
                 filtered_out=filtered_out,
+                sponsorship_hidden_count=sponsorship_hidden_count,
                 error="; ".join(errors) if errors else None,
                 notice=notice,
             )
@@ -180,8 +193,19 @@ class SearchTab(QWidget):
         outer_layout.addWidget(self.preferences_panel)
 
         self.search_button = QPushButton("Search")
+        self.search_button.setFixedSize(200, 36)
+        self.search_button.setStyleSheet(
+            "QPushButton { background-color: #2F81F7; color: white; border: none;"
+            " border-radius: 6px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #388BFD; }"
+            "QPushButton:disabled { background-color: #30363D; color: #7D8590; }"
+        )
         self.search_button.clicked.connect(self._on_search_clicked)
-        outer_layout.addWidget(self.search_button)
+        search_button_row = QHBoxLayout()
+        search_button_row.addStretch()
+        search_button_row.addWidget(self.search_button)
+        search_button_row.addStretch()
+        outer_layout.addLayout(search_button_row)
 
         outer_layout.addWidget(self._build_status_row())
         outer_layout.addWidget(self._build_manual_step_banner())
@@ -232,7 +256,11 @@ class SearchTab(QWidget):
     def _build_results_table(self) -> QTableWidget:
         self.results_table = QTableWidget(0, len(RESULT_COLUMNS))
         self.results_table.setHorizontalHeaderLabels(RESULT_COLUMNS)
-        self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header = self.results_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        for column, width in enumerate(RESULT_COLUMN_WIDTHS):
+            self.results_table.setColumnWidth(column, width)
+        header.setStretchLastSection(False)
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.results_table.currentCellChanged.connect(lambda *_: self._on_row_selected())
@@ -240,9 +268,23 @@ class SearchTab(QWidget):
 
     def _build_detail_panel(self) -> QWidget:
         panel = QWidget()
-        layout = QVBoxLayout(panel)
+        outer_layout = QVBoxLayout(panel)
 
-        self.detail_title_label = QLabel("Select a job to see details")
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(20)
+        shadow.setColor(QColor(0, 0, 0, 120))
+        shadow.setOffset(0, 2)
+        panel.setGraphicsEffect(shadow)
+
+        self.detail_placeholder_label = QLabel("Select a job from the list to see details")
+        self.detail_placeholder_label.setWordWrap(True)
+        self.detail_placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer_layout.addWidget(self.detail_placeholder_label)
+
+        self.detail_content_widget = QWidget()
+        layout = QVBoxLayout(self.detail_content_widget)
+
+        self.detail_title_label = QLabel("")
         self.detail_title_label.setWordWrap(True)
         self.detail_company_label = QLabel("")
         self.detail_meta_label = QLabel("")
@@ -254,6 +296,30 @@ class SearchTab(QWidget):
 
         self.detail_description = QTextEdit()
         self.detail_description.setReadOnly(True)
+        self.detail_description.setAcceptRichText(False)
+        self.detail_description.setStyleSheet(
+            "font-size: 10px; color: #E6EDF3; line-height: normal;"
+        )
+
+        self.resume_indicator_label = QLabel("")
+        self.resume_indicator_label.setWordWrap(True)
+
+        tailoring_row = QHBoxLayout()
+        self.tailor_resume_button_main = QPushButton("Tailor Resume")
+        self.tailor_resume_button_main.setEnabled(False)
+        self.tailor_resume_button_main.clicked.connect(self._on_tailor_resume_clicked)
+
+        self.view_tailored_button = QPushButton("View Tailored Resume")
+        self.view_tailored_button.setEnabled(False)
+        self.view_tailored_button.clicked.connect(self._on_view_tailored_resume_clicked)
+
+        self.download_resume_button = QPushButton("Download Resume")
+        self.download_resume_button.setEnabled(False)
+        self.download_resume_button.clicked.connect(self._on_download_resume_clicked)
+
+        tailoring_row.addWidget(self.tailor_resume_button_main)
+        tailoring_row.addWidget(self.view_tailored_button)
+        tailoring_row.addWidget(self.download_resume_button)
 
         button_row = QHBoxLayout()
         self.apply_button = QPushButton("Apply")
@@ -278,7 +344,12 @@ class SearchTab(QWidget):
         button_row.addWidget(self.mark_applied_button)
 
         layout.addWidget(self.detail_description, 1)
+        layout.addWidget(self.resume_indicator_label)
+        layout.addLayout(tailoring_row)
         layout.addLayout(button_row)
+
+        outer_layout.addWidget(self.detail_content_widget)
+        self.detail_content_widget.setVisible(False)
         return panel
 
     def _build_score_panel(self) -> QGroupBox:
@@ -292,9 +363,12 @@ class SearchTab(QWidget):
 
         self.score_status_label = QLabel("")
         self.score_status_label.setWordWrap(True)
+        self.score_status_label.setTextFormat(Qt.TextFormat.PlainText)
 
         self.score_progress_bar = QProgressBar()
         self.score_progress_bar.setRange(0, 0)
+        self.score_progress_bar.setMaximumHeight(50)
+        self.score_progress_bar.setTextVisible(False)
         self.score_progress_bar.hide()
 
         self.retry_score_button = QPushButton("Retry")
@@ -317,11 +391,13 @@ class SearchTab(QWidget):
         self.reasoning_header.setStyleSheet("font-weight: bold;")
         self.reasoning_label = QLabel("")
         self.reasoning_label.setWordWrap(True)
+        self.reasoning_label.setTextFormat(Qt.TextFormat.PlainText)
 
         self.recommendation_header = QLabel("Recommendation")
         self.recommendation_header.setStyleSheet("font-weight: bold;")
         self.recommendation_label = QLabel("")
         self.recommendation_label.setWordWrap(True)
+        self.recommendation_label.setTextFormat(Qt.TextFormat.PlainText)
 
         self.tailor_resume_button = QPushButton("Tailor Resume")
         self.tailor_resume_button.setStyleSheet("font-weight: bold; padding: 6px;")
@@ -445,6 +521,7 @@ class SearchTab(QWidget):
             f"Showing {len(self.current_jobs)} results "
             f"({outcome.total_found} found across title searches, {outcome.filtered_out} filtered out)"
         )
+        self.preferences_panel.show_sponsorship_hidden_count(outcome.sponsorship_hidden_count)
 
     def _on_search_failed(self, message: str) -> None:
         self._reset_search_buttons()
@@ -471,20 +548,31 @@ class SearchTab(QWidget):
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
             score_text = "Pending" if job.score is None else str(int(job.score))
+            title_text = job.title
+            if detect_sponsorship_restriction(job.description):
+                title_text = f"⚠️ {job.title}"
             for column, value in enumerate(
-                [job.title, job.company, job.location, job.source, job.posted_date, score_text, job.status]
+                [title_text, job.company, job.location, job.source, job.posted_date, score_text, job.status]
             ):
-                self.results_table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if column == 0 and title_text != job.title:
+                    item.setToolTip("Review visa requirements before applying")
+                self.results_table.setItem(row, column, item)
             if job.score is not None:
                 self._colorize_score_cell(row, int(job.score))
 
     def _on_row_selected(self) -> None:
         row = self.results_table.currentRow()
         if row < 0 or row >= len(self.current_jobs):
+            self.selected_job = None
+            self.detail_content_widget.setVisible(False)
+            self.detail_placeholder_label.setVisible(True)
             return
         self._show_job_detail(self.current_jobs[row])
 
     def _show_job_detail(self, job) -> None:
+        self.detail_placeholder_label.setVisible(False)
+        self.detail_content_widget.setVisible(True)
         self.selected_job = job
         self.detail_title_label.setText(job.title)
         self.detail_company_label.setText(job.company)
@@ -492,7 +580,10 @@ class SearchTab(QWidget):
         self.detail_description.setPlainText(job.description or "(No description available.)")
         self.apply_button.setEnabled(bool(job.url))
         self.score_button.setEnabled(True)
+        self.tailor_resume_button_main.setEnabled(True)
+        self.download_resume_button.setEnabled(True)
         self._update_tracker_buttons(job)
+        self._update_tailoring_buttons(job)
 
         self._reset_score_panel()
         cached_score = get_cached_score(job.id) if job.id else None
@@ -500,6 +591,20 @@ class SearchTab(QWidget):
             self._render_score(cached_score)
         elif job.description and job.description.strip():
             self._trigger_scoring(job)
+
+    def _update_tailoring_buttons(self, job) -> None:
+        tailored = TailoredResumeRepository().get_by_job_id(job.id) if job.id else None
+        if tailored is not None:
+            self.view_tailored_button.setEnabled(True)
+            self.resume_indicator_label.setText(f"Resume: {tailored.file_name}")
+            return
+
+        self.view_tailored_button.setEnabled(False)
+        default_resume = self.resume_service.get_default_resume()
+        if default_resume is not None:
+            self.resume_indicator_label.setText(f"Resume: Default ({default_resume.file_name})")
+        else:
+            self.resume_indicator_label.setText("Resume: None (upload a default resume in Settings)")
 
     def _update_tracker_buttons(self, job) -> None:
         self.current_application = (
@@ -557,6 +662,49 @@ class SearchTab(QWidget):
             job, default_resume.file_path, role_description, profile, job.score, parent=self
         )
         dialog.exec()
+        self._update_tailoring_buttons(job)
+
+    def _on_view_tailored_resume_clicked(self) -> None:
+        if not self.selected_job:
+            return
+
+        tailored = TailoredResumeRepository().get_by_job_id(self.selected_job.id)
+        if tailored is None:
+            return
+
+        profile = self.profile_repository.get()
+        role_description = self._matching_role_description(profile, self.selected_job.title)
+        dialog = TailoringDialog(
+            self.selected_job,
+            tailored.source_resume_path,
+            role_description,
+            profile,
+            self.selected_job.score,
+            parent=self,
+            existing_tailored_resume=tailored,
+        )
+        dialog.exec()
+        self._update_tailoring_buttons(self.selected_job)
+
+    def _on_download_resume_clicked(self) -> None:
+        if not self.selected_job:
+            return
+
+        tailored = TailoredResumeRepository().get_by_job_id(self.selected_job.id)
+        if tailored is not None:
+            source_path, suggested_name = tailored.file_path, tailored.file_name
+        else:
+            default_resume = self.resume_service.get_default_resume()
+            if default_resume is None:
+                QMessageBox.warning(self, "No Resume", "Please upload your resume in Settings first")
+                return
+            source_path, suggested_name = default_resume.file_path, default_resume.file_name
+
+        target, _ = QFileDialog.getSaveFileName(
+            self, "Download Resume", suggested_name, "Word Documents (*.docx)"
+        )
+        if target:
+            shutil.copy2(source_path, target)
 
     @staticmethod
     def _matching_role_description(profile, job_title: str) -> str:
@@ -652,10 +800,10 @@ class SearchTab(QWidget):
         self.score_value_label.show()
 
         self.matched_keywords_label.setText(
-            self._render_keyword_pills(score.matched_keywords, "#2e7d32", "#ffffff")
+            self._render_keyword_pills(score.matched_keywords, "#1A7F37", "#3FB950")
         )
         self.missing_keywords_label.setText(
-            self._render_keyword_pills(score.missing_keywords, "#c62828", "#ffffff")
+            self._render_keyword_pills(score.missing_keywords, "#6E1C1C", "#F85149")
         )
         self.reasoning_label.setText(score.reasoning or "(No reasoning provided.)")
         self.recommendation_label.setText(score.recommendation or "(No recommendation provided.)")
@@ -671,10 +819,10 @@ class SearchTab(QWidget):
     @staticmethod
     def _score_colors(score: int) -> tuple[str, str]:
         if score >= 90:
-            return "#2e7d32", "#ffffff"
+            return SCORE_COLORS["high"]
         if score >= 70:
-            return "#f9a825", "#1e1e1e"
-        return "#c62828", "#ffffff"
+            return SCORE_COLORS["medium"]
+        return SCORE_COLORS["low"]
 
     @staticmethod
     def _render_keyword_pills(keywords: list[str], background: str, text_color: str) -> str:

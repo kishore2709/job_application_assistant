@@ -96,7 +96,16 @@ def build_diff_html(original_lines: list[str], tailored_lines: list[str]) -> tup
 
 
 class TailoringDialog(QDialog):
-    def __init__(self, job, resume_path: str, role_description: str, profile, score, parent=None):
+    def __init__(
+        self,
+        job,
+        resume_path: str,
+        role_description: str,
+        profile,
+        score,
+        parent=None,
+        existing_tailored_resume=None,
+    ):
         super().__init__(parent)
         self.job = job
         self.resume_path = resume_path
@@ -114,7 +123,11 @@ class TailoringDialog(QDialog):
         self._build_diff_view()
         self._build_button_row()
 
-        self._start_tailoring()
+        if existing_tailored_resume is not None:
+            self.resume_path = existing_tailored_resume.source_resume_path or resume_path
+            self._on_finished(existing_tailored_resume)
+        else:
+            self._start_tailoring()
 
     def _build_loading_state(self) -> None:
         self.loading_widget = QWidget()

@@ -8,7 +8,7 @@ from app.models.resume import Resume
 from app.models.score import JobScore
 from app.models.search_preferences import SearchPreferences
 from app.models.tailored_resume import TailoredResume
-from app.utils.constants import DEFAULT_BLACKLISTED_COMPANIES
+from app.utils.constants import ADDITIONAL_BLACKLISTED_COMPANIES, DEFAULT_BLACKLISTED_COMPANIES
 
 
 class ProfileRepository:
@@ -113,6 +113,17 @@ class BlacklistRepository:
                     [(name,) for name in DEFAULT_BLACKLISTED_COMPANIES],
                 )
                 connection.commit()
+        finally:
+            connection.close()
+
+    def seed_additional_defaults(self) -> None:
+        connection = get_connection()
+        try:
+            connection.executemany(
+                "INSERT OR IGNORE INTO blacklist_companies (company_name) VALUES (?)",
+                [(name,) for name in ADDITIONAL_BLACKLISTED_COMPANIES],
+            )
+            connection.commit()
         finally:
             connection.close()
 
@@ -595,6 +606,17 @@ class TailoredResumeRepository:
         finally:
             connection.close()
 
+    def get_by_job_id(self, job_id: int) -> TailoredResume | None:
+        connection = get_connection()
+        try:
+            row = connection.execute(
+                "SELECT * FROM tailored_resumes WHERE job_id = ? ORDER BY created_at DESC LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            return self._row_to_tailored_resume(row) if row else None
+        finally:
+            connection.close()
+
     def update_text_and_file(self, tailored_resume_id: int, text: str, file_path: str) -> None:
         connection = get_connection()
         try:
@@ -689,7 +711,9 @@ class SearchPreferencesRepository:
                 remote_only=bool(row["remote_only"]),
                 fulltime_only=bool(row["fulltime_only"]),
                 easy_apply_only=bool(row["easy_apply_only"]),
+                hide_sponsorship_restricted=bool(row["hide_sponsorship_restricted"]),
                 source=row["source"] or "Both",
+                theme=row["theme"] or "dark",
                 updated_at=row["updated_at"],
             )
         finally:
@@ -703,8 +727,8 @@ class SearchPreferencesRepository:
                 INSERT INTO search_preferences (
                     id, location_scope, selected_states, selected_titles,
                     date_posted_filter, remote_only, fulltime_only,
-                    easy_apply_only, source, updated_at
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    easy_apply_only, hide_sponsorship_restricted, source, theme, updated_at
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     location_scope = excluded.location_scope,
                     selected_states = excluded.selected_states,
@@ -713,7 +737,9 @@ class SearchPreferencesRepository:
                     remote_only = excluded.remote_only,
                     fulltime_only = excluded.fulltime_only,
                     easy_apply_only = excluded.easy_apply_only,
+                    hide_sponsorship_restricted = excluded.hide_sponsorship_restricted,
                     source = excluded.source,
+                    theme = excluded.theme,
                     updated_at = datetime('now')
                 """,
                 (
@@ -724,7 +750,9 @@ class SearchPreferencesRepository:
                     int(preferences.remote_only),
                     int(preferences.fulltime_only),
                     int(preferences.easy_apply_only),
+                    int(preferences.hide_sponsorship_restricted),
                     preferences.source,
+                    preferences.theme,
                 ),
             )
             connection.commit()

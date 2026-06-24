@@ -10,5 +10,7 @@ class SearchPreferences:
     remote_only: bool = False
     fulltime_only: bool = True
     easy_apply_only: bool = False
+    hide_sponsorship_restricted: bool = False
     source: str = "Both"
+    theme: str = "dark"
     updated_at: str = ""

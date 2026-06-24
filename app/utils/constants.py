@@ -13,9 +13,21 @@ DEFAULT_BLACKLISTED_COMPANIES = [
     "Mphasis",
 ]
 
+# Added later to catch full/alternate company names via substring matching
+# (e.g. "Tata Consultancy Services" appearing where "TCS" wouldn't match).
+# Seeded once for existing users without re-adding the original list above,
+# in case a user deliberately removed one of those.
+ADDITIONAL_BLACKLISTED_COMPANIES = [
+    "Tata Consultancy Services",
+    "Infosys BPM",
+    "HCL Technologies",
+    "Wipro Technologies",
+    "Cognizant Technology",
+]
+
 APP_TITLE = "Job Hunt Assistant"
 MIN_WINDOW_WIDTH = 1200
-MIN_WINDOW_HEIGHT = 800
+MIN_WINDOW_HEIGHT = 980
 
 US_STATES = [
     "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",

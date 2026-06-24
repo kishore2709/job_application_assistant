@@ -27,6 +27,7 @@ class SettingsTab(QWidget):
         self.repository = ProfileRepository()
         self.resume_service = ResumeService()
         self._default_resume_path = ""
+        self._editing_role_item = None
         self._build_ui()
         self.load_settings()
 
@@ -40,11 +41,25 @@ class SettingsTab(QWidget):
         self.email_input = QLineEdit()
         self.phone_input = QLineEdit()
         self.linkedin_input = QLineEdit()
+        self.linkedin_input.setPlaceholderText("https://linkedin.com/in/yourprofile")
         self.github_input = QLineEdit()
+        self.github_input.setPlaceholderText("https://github.com/yourusername")
         self.location_input = QLineEdit()
+        self.location_input.setPlaceholderText("Sacramento, CA")
 
         self.visa_status_input = QLineEdit()
         self.visa_status_input.setText(DEFAULT_VISA_STATUS)
+
+        for field in (
+            self.full_name_input,
+            self.email_input,
+            self.phone_input,
+            self.linkedin_input,
+            self.github_input,
+            self.location_input,
+            self.visa_status_input,
+        ):
+            field.setMinimumWidth(400)
 
         self.salary_min_input = QSpinBox()
         self.salary_min_input.setRange(0, 1_000_000)
@@ -85,6 +100,7 @@ class SettingsTab(QWidget):
         outer_layout.addWidget(self._build_blacklist_group())
 
         save_button = QPushButton("Save")
+        save_button.setProperty("primary", True)
         save_button.clicked.connect(self.save_settings)
         outer_layout.addWidget(save_button)
         outer_layout.addStretch()
@@ -94,12 +110,13 @@ class SettingsTab(QWidget):
         layout = QVBoxLayout()
 
         self.target_roles_list = QListWidget()
+        self.target_roles_list.currentItemChanged.connect(self._on_role_selected)
         layout.addWidget(self.target_roles_list)
 
         self.role_title_input = QLineEdit()
-        self.role_title_input.setPlaceholderText("Role title")
+        self.role_title_input.setPlaceholderText("e.g. Lead Java Developer")
         self.role_description_input = QLineEdit()
-        self.role_description_input.setPlaceholderText("Role description")
+        self.role_description_input.setPlaceholderText("e.g. Senior backend Java role...")
 
         input_row = QHBoxLayout()
         input_row.addWidget(self.role_title_input)
@@ -107,11 +124,11 @@ class SettingsTab(QWidget):
         layout.addLayout(input_row)
 
         button_row = QHBoxLayout()
-        add_button = QPushButton("Add Role")
-        add_button.clicked.connect(self._on_add_role)
+        self.add_role_button = QPushButton("Add Role")
+        self.add_role_button.clicked.connect(self._on_add_role)
         remove_button = QPushButton("Remove Selected")
         remove_button.clicked.connect(self._on_remove_role)
-        button_row.addWidget(add_button)
+        button_row.addWidget(self.add_role_button)
         button_row.addWidget(remove_button)
         layout.addLayout(button_row)
 
@@ -161,20 +178,48 @@ class SettingsTab(QWidget):
         self.default_resume_label.setText(resume.file_name)
         self.default_resume_date_label.setText(f"(uploaded {resume.uploaded_at})")
 
+    def _on_role_selected(self, current, _previous) -> None:
+        self._editing_role_item = current
+        if current is None:
+            self.role_title_input.clear()
+            self.role_description_input.clear()
+            self.add_role_button.setText("Add Role")
+            return
+
+        data = current.data(1) or {}
+        self.role_title_input.setText(data.get("role_title", ""))
+        self.role_description_input.setText(data.get("role_description", ""))
+        self.add_role_button.setText("Update Role")
+
     def _on_add_role(self) -> None:
         title = self.role_title_input.text().strip()
         if not title:
             return
         description = self.role_description_input.text().strip()
-        item = QListWidgetItem(f"{title} — {description}" if description else title)
-        item.setData(1, {"role_title": title, "role_description": description})
-        self.target_roles_list.addItem(item)
+        label = f"{title} — {description}" if description else title
+
+        if self._editing_role_item is not None:
+            self._editing_role_item.setText(label)
+            self._editing_role_item.setData(1, {"role_title": title, "role_description": description})
+        else:
+            item = QListWidgetItem(label)
+            item.setData(1, {"role_title": title, "role_description": description})
+            self.target_roles_list.addItem(item)
+
         self.role_title_input.clear()
         self.role_description_input.clear()
+        self.target_roles_list.clearSelection()
+        self.target_roles_list.setCurrentItem(None)
+        self._editing_role_item = None
+        self.add_role_button.setText("Add Role")
 
     def _on_remove_role(self) -> None:
         for item in self.target_roles_list.selectedItems():
             self.target_roles_list.takeItem(self.target_roles_list.row(item))
+        self._editing_role_item = None
+        self.role_title_input.clear()
+        self.role_description_input.clear()
+        self.add_role_button.setText("Add Role")
 
     def _on_add_blacklist_company(self) -> None:
         name = self.blacklist_company_input.text().strip()

@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 
 from app.db.repositories import JobRepository, ProfileRepository
@@ -16,12 +17,43 @@ SOURCE_BOTH = "Both"
 
 CONTRACT_KEYWORDS = ["contract", "c2c", "corp-to-corp", "corp to corp", "1099"]
 
+SPONSORSHIP_RESTRICTION_PHRASES = [
+    "no sponsorship",
+    "not sponsor",
+    "will not sponsor",
+    "cannot sponsor",
+    "sponsorship not available",
+    "does not provide sponsorship",
+    "unable to sponsor",
+    "requiring sponsorship",
+    "now or in the future",
+    "must possess valid and unrestricted",
+    "no visa sponsorship",
+    "without sponsorship",
+    "temporary visa",
+    "opt, cpt, stem",
+    "unrestricted work authorization",
+]
+H1B_NEGATION_PATTERN = re.compile(
+    r"h-?1b.{0,40}(not|exclude[d]?)|(not|exclude[d]?).{0,40}h-?1b", re.IGNORECASE
+)
+
+
+def detect_sponsorship_restriction(description: str) -> bool:
+    if not description:
+        return False
+    text = description.lower()
+    if any(phrase in text for phrase in SPONSORSHIP_RESTRICTION_PHRASES):
+        return True
+    return bool(H1B_NEGATION_PATTERN.search(description))
+
 
 @dataclass
 class SearchOutcome:
     jobs: list[Job] = field(default_factory=list)
     total_found: int = 0
     filtered_out: int = 0
+    sponsorship_hidden_count: int = 0
     error: str | None = None
     notice: str | None = None
 
@@ -87,6 +119,10 @@ def search_jobs(
     on_progress("Filtering results...")
     blacklist = [c.company_name for c in ProfileRepository().get().blacklist_companies]
     filtered_jobs, filtered_out = filter_results(all_jobs, blacklist, filters)
+    filtered_jobs, sponsorship_hidden_count = filter_sponsorship_restricted(
+        filtered_jobs, filters.get("hide_sponsorship_restricted", False)
+    )
+    filtered_out += sponsorship_hidden_count
     saved_jobs = save_jobs_to_db(filtered_jobs)
 
     on_progress(f"Done — {len(saved_jobs)} jobs found")
@@ -95,20 +131,22 @@ def search_jobs(
         jobs=saved_jobs,
         total_found=len(all_jobs),
         filtered_out=filtered_out,
+        sponsorship_hidden_count=sponsorship_hidden_count,
         error=str(search_error) if search_error else None,
         notice=notice,
     )
 
 
 def filter_results(jobs: list[Job], blacklist: list[str], preferences: dict) -> tuple[list[Job], int]:
-    blacklist_lower = {name.strip().lower() for name in blacklist}
+    blacklist_lower = [name.strip().lower() for name in blacklist if name.strip()]
     full_time_only = preferences.get("full_time_only", False)
     remote_only = preferences.get("remote_only", False)
     easy_apply_only = preferences.get("easy_apply_only", False)
 
     filtered = []
     for job in jobs:
-        if job.company.strip().lower() in blacklist_lower:
+        company_lower = job.company.strip().lower()
+        if any(blacklisted_word in company_lower for blacklisted_word in blacklist_lower):
             continue
         if full_time_only and any(
             keyword in job.employment_type.lower() for keyword in CONTRACT_KEYWORDS
@@ -122,6 +160,13 @@ def filter_results(jobs: list[Job], blacklist: list[str], preferences: dict) -> 
 
     removed_count = len(jobs) - len(filtered)
     return filtered, removed_count
+
+
+def filter_sponsorship_restricted(jobs: list[Job], hide_restricted: bool) -> tuple[list[Job], int]:
+    if not hide_restricted:
+        return jobs, 0
+    kept = [job for job in jobs if not detect_sponsorship_restriction(job.description)]
+    return kept, len(jobs) - len(kept)
 
 
 def save_jobs_to_db(jobs: list[Job]) -> list[Job]:

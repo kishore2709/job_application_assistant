@@ -29,6 +29,18 @@ def _apply_migrations(connection: sqlite3.Connection) -> None:
     if tailored_resume_columns and "source_resume_path" not in tailored_resume_columns:
         connection.execute("ALTER TABLE tailored_resumes ADD COLUMN source_resume_path TEXT")
 
+    search_preferences_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(search_preferences)")
+    }
+    if search_preferences_columns and "hide_sponsorship_restricted" not in search_preferences_columns:
+        connection.execute(
+            "ALTER TABLE search_preferences ADD COLUMN hide_sponsorship_restricted INTEGER NOT NULL DEFAULT 0"
+        )
+    if search_preferences_columns and "theme" not in search_preferences_columns:
+        connection.execute(
+            "ALTER TABLE search_preferences ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark'"
+        )
+
     _migrate_applications_table(connection)
 
 

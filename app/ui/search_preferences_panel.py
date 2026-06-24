@@ -38,6 +38,7 @@ class SearchPreferencesPanel(QWidget):
         self._title_checkboxes: dict[str, QCheckBox] = {}
         self._state_checkboxes: dict[str, QCheckBox] = {}
         self._loading = False
+        self._current_theme = "dark"
 
         self._build_ui()
         self._load_preferences()
@@ -57,6 +58,7 @@ class SearchPreferencesPanel(QWidget):
 
         self.content_widget = QWidget()
         content_layout = QVBoxLayout(self.content_widget)
+        content_layout.setSpacing(14)
         content_layout.addWidget(self._build_titles_group())
         content_layout.addWidget(self._build_location_group())
 
@@ -66,11 +68,26 @@ class SearchPreferencesPanel(QWidget):
         bottom_row.addWidget(self._build_source_group())
         content_layout.addLayout(bottom_row)
 
-        outer_layout.addWidget(self.content_widget)
+        # Every section above has an explicit minimum height so nothing
+        # ever collapses to 0px or overlaps — but that means total content
+        # height can legitimately exceed the space the splitter below leaves
+        # available. Wrapping it in a scroll area turns "not enough room"
+        # into "scroll for more" instead of clipped/overlapping widgets.
+        self.content_scroll_area = QScrollArea()
+        self.content_scroll_area.setWidgetResizable(True)
+        # The parent layout only gives the splitter below stretch priority,
+        # so without an explicit minimum this scroll area is squeezed down
+        # to whatever's left over — leaving Posted/Filters/Source below the
+        # fold even on a tall window. Pin it to the height all 5 sections
+        # actually need so they render without scrolling in the common case.
+        self.content_scroll_area.setMinimumHeight(560)
+        self.content_scroll_area.setMaximumHeight(560)
+        self.content_scroll_area.setWidget(self.content_widget)
+        outer_layout.addWidget(self.content_scroll_area)
 
     def _on_toggle_collapsed(self) -> None:
-        collapsed = self.content_widget.isVisible()
-        self.content_widget.setVisible(not collapsed)
+        collapsed = self.content_scroll_area.isVisible()
+        self.content_scroll_area.setVisible(not collapsed)
         self.toggle_button.setText(
             "► Search Preferences" if collapsed else "▼ Search Preferences"
         )
@@ -82,12 +99,20 @@ class SearchPreferencesPanel(QWidget):
         self.titles_container = QWidget()
         self.titles_layout = QVBoxLayout(self.titles_container)
         self.titles_layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.titles_container)
+
+        titles_scroll_area = QScrollArea()
+        titles_scroll_area.setWidgetResizable(True)
+        titles_scroll_area.setMinimumHeight(120)
+        titles_scroll_area.setMaximumHeight(150)
+        titles_scroll_area.setWidget(self.titles_container)
+        layout.addWidget(titles_scroll_area)
 
         select_row = QHBoxLayout()
         select_all_button = QPushButton("Select All")
+        select_all_button.setMinimumHeight(28)
         select_all_button.clicked.connect(lambda: self._set_all_titles(True))
         deselect_all_button = QPushButton("Deselect All")
+        deselect_all_button.setMinimumHeight(28)
         deselect_all_button.clicked.connect(lambda: self._set_all_titles(False))
         select_row.addWidget(select_all_button)
         select_row.addWidget(deselect_all_button)
@@ -96,11 +121,15 @@ class SearchPreferencesPanel(QWidget):
         add_row = QHBoxLayout()
         self.new_title_input = QLineEdit()
         self.new_title_input.setPlaceholderText("Add a custom job title")
+        self.new_title_input.setMinimumHeight(28)
         add_title_button = QPushButton("Add")
+        add_title_button.setMinimumHeight(28)
         add_title_button.clicked.connect(self._on_add_title)
         add_row.addWidget(self.new_title_input)
         add_row.addWidget(add_title_button)
         layout.addLayout(add_row)
+
+        group.setMinimumHeight(220)
 
         self._rebuild_title_checkboxes()
 
@@ -108,7 +137,8 @@ class SearchPreferencesPanel(QWidget):
         return group
 
     def _build_location_group(self) -> QGroupBox:
-        group = QGroupBox("Location")
+        group = QGroupBox("LOCATION")
+        group.setProperty("sectionStyle", "minor")
         layout = QVBoxLayout()
 
         country_row = QHBoxLayout()
@@ -140,6 +170,7 @@ class SearchPreferencesPanel(QWidget):
         states_grid = QGridLayout(states_grid_widget)
         for index, state in enumerate(US_STATES):
             checkbox = QCheckBox(state)
+            checkbox.setMinimumHeight(22)
             checkbox.stateChanged.connect(self._on_state_checkbox_changed)
             self._state_checkboxes[state] = checkbox
             states_grid.addWidget(checkbox, index // 5, index % 5)
@@ -162,22 +193,27 @@ class SearchPreferencesPanel(QWidget):
         return group
 
     def _build_date_posted_group(self) -> QGroupBox:
-        group = QGroupBox("Posted")
+        group = QGroupBox("POSTED")
+        group.setProperty("sectionStyle", "minor")
         layout = QVBoxLayout()
 
         self.date_posted_group = QButtonGroup(self)
         self.date_posted_radios: dict[str, QRadioButton] = {}
         for value, label in DATE_POSTED_OPTIONS:
             radio = QRadioButton(label)
+            radio.setMinimumHeight(22)
             self.date_posted_group.addButton(radio)
             self.date_posted_radios[value] = radio
             layout.addWidget(radio)
+
+        group.setMinimumHeight(165)
 
         group.setLayout(layout)
         return group
 
     def _build_filters_group(self) -> QGroupBox:
-        group = QGroupBox("Filters")
+        group = QGroupBox("FILTERS")
+        group.setProperty("sectionStyle", "minor")
         layout = QVBoxLayout()
 
         self.remote_only_checkbox = QCheckBox("Remote")
@@ -188,13 +224,36 @@ class SearchPreferencesPanel(QWidget):
             self.full_time_only_checkbox,
             self.easy_apply_only_checkbox,
         ):
+            checkbox.setMinimumHeight(22)
             layout.addWidget(checkbox)
 
+        self.hide_sponsorship_checkbox = QCheckBox("Hide jobs with sponsorship restrictions")
+        self.hide_sponsorship_checkbox.setMinimumHeight(22)
+        self.hide_sponsorship_checkbox.setToolTip("Review visa requirements before applying")
+        layout.addWidget(self.hide_sponsorship_checkbox)
+
+        sponsorship_note = QLabel(
+            "H-1B transfer ≠ new sponsorship — review flagged jobs before skipping."
+        )
+        sponsorship_note.setWordWrap(True)
+        sponsorship_note.setToolTip(
+            "H-1B transfer ≠ new sponsorship. Some jobs saying 'no sponsorship' may "
+            "still accept H-1B transfers. Review flagged jobs before skipping."
+        )
+        sponsorship_note.setStyleSheet("color: #7D8590; font-size: 9px; font-style: italic;")
+        layout.addWidget(sponsorship_note)
+
+        self.sponsorship_hidden_count_label = QLabel("")
+        self.sponsorship_hidden_count_label.setWordWrap(True)
+        layout.addWidget(self.sponsorship_hidden_count_label)
+
+        group.setMinimumHeight(185)
         group.setLayout(layout)
         return group
 
     def _build_source_group(self) -> QGroupBox:
-        group = QGroupBox("Source")
+        group = QGroupBox("SOURCE")
+        group.setProperty("sectionStyle", "minor")
         layout = QVBoxLayout()
 
         self.source_linkedin_radio = QRadioButton("LinkedIn")
@@ -202,9 +261,12 @@ class SearchPreferencesPanel(QWidget):
         self.source_both_radio = QRadioButton("Both")
         self.source_group = QButtonGroup(self)
         for radio in (self.source_linkedin_radio, self.source_jsearch_radio, self.source_both_radio):
+            radio.setMinimumHeight(22)
             self.source_group.addButton(radio)
             layout.addWidget(radio)
         self.source_both_radio.setChecked(True)
+
+        group.setMinimumHeight(140)
 
         group.setLayout(layout)
         return group
@@ -231,6 +293,7 @@ class SearchPreferencesPanel(QWidget):
         active_roles = self.target_role_repository.list_active()
         for role in active_roles:
             checkbox = QCheckBox(role.role_title)
+            checkbox.setMinimumHeight(22)
             checkbox.stateChanged.connect(self._on_changed)
             self._title_checkboxes[role.role_title] = checkbox
             self.titles_layout.addWidget(checkbox)
@@ -284,7 +347,7 @@ class SearchPreferencesPanel(QWidget):
             remove_button.clicked.connect(lambda _checked, s=state: self._remove_state(s))
             pill_layout.addWidget(remove_button)
             pill.setStyleSheet(
-                "background-color: #3a3a3a; border-radius: 10px;"
+                "background-color: #21262D; border: 1px solid #30363D; border-radius: 10px;"
             )
             self.selected_states_pills_layout.addWidget(pill)
         self.selected_states_pills_layout.addStretch()
@@ -324,7 +387,14 @@ class SearchPreferencesPanel(QWidget):
             "full_time_only": self.full_time_only_checkbox.isChecked(),
             "easy_apply_only": self.easy_apply_only_checkbox.isChecked(),
             "date_posted_filter": self.get_date_posted_filter(),
+            "hide_sponsorship_restricted": self.hide_sponsorship_checkbox.isChecked(),
         }
+
+    def show_sponsorship_hidden_count(self, count: int) -> None:
+        if count:
+            self.sponsorship_hidden_count_label.setText(f"{count} jobs hidden (visa restrictions)")
+        else:
+            self.sponsorship_hidden_count_label.setText("")
 
     def get_source(self) -> str:
         if self.source_linkedin_radio.isChecked():
@@ -343,6 +413,7 @@ class SearchPreferencesPanel(QWidget):
         self.remote_only_checkbox.stateChanged.connect(self._on_changed)
         self.full_time_only_checkbox.stateChanged.connect(self._on_changed)
         self.easy_apply_only_checkbox.stateChanged.connect(self._on_changed)
+        self.hide_sponsorship_checkbox.stateChanged.connect(self._on_changed)
         self.source_linkedin_radio.toggled.connect(self._on_changed)
         self.source_jsearch_radio.toggled.connect(self._on_changed)
         self.source_both_radio.toggled.connect(self._on_changed)
@@ -361,9 +432,19 @@ class SearchPreferencesPanel(QWidget):
             remote_only=self.remote_only_checkbox.isChecked(),
             fulltime_only=self.full_time_only_checkbox.isChecked(),
             easy_apply_only=self.easy_apply_only_checkbox.isChecked(),
+            hide_sponsorship_restricted=self.hide_sponsorship_checkbox.isChecked(),
             source=self.get_source(),
+            theme=self._current_theme,
         )
         self.preferences_repository.save(preferences)
+
+    def get_theme(self) -> str:
+        return self._current_theme
+
+    def set_theme(self, theme: str) -> None:
+        self._current_theme = theme
+        if not self._loading:
+            self._save_preferences()
 
     def _load_preferences(self) -> None:
         self._loading = True
@@ -371,6 +452,8 @@ class SearchPreferencesPanel(QWidget):
         try:
             preferences = self.preferences_repository.get()
             is_first_launch = not preferences.updated_at
+            self._current_theme = preferences.theme
+            self.hide_sponsorship_checkbox.setChecked(preferences.hide_sponsorship_restricted)
 
             if preferences.location_scope == LOCATION_SCOPE_STATES:
                 self.location_states_radio.setChecked(True)

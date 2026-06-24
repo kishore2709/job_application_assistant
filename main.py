@@ -14,6 +14,7 @@ def main() -> None:
     ensure_app_directories()
     init_db()
     BlacklistRepository().seed_defaults_if_empty()
+    BlacklistRepository().seed_additional_defaults()
 
     app = QApplication(sys.argv)
     window = MainWindow()
