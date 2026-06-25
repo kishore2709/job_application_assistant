@@ -29,13 +29,14 @@ from app.db.repositories import (
     TailoredResumeRepository,
 )
 from app.models.score import JobScore
-from app.services.claude_service import (
-    ClaudeNotConfiguredError,
-    ClaudeRequestError,
-    ClaudeService,
-    ClaudeTimeoutError,
-)
 from app.services.job_search_service import SearchOutcome, detect_sponsorship_restriction, search_jobs
+from app.services.llm_service import (
+    LLMNotConfiguredError,
+    LLMRequestError,
+    LLMService,
+    LLMTimeoutError,
+    scoring_cost_for_model,
+)
 from app.services.resume_service import ResumeService
 from app.services.scoring_service import EmptyJobDescriptionError, get_cached_score, score_job
 from app.ui.search_preferences_panel import SearchPreferencesPanel
@@ -45,7 +46,6 @@ from automation.browser_manager import BrowserLaunchError, BrowserManager
 
 RESULT_COLUMNS = ["Title", "Company", "Location", "Source", "Posted", "Match Score", "Status"]
 RESULT_COLUMN_WIDTHS = [200, 150, 130, 80, 100, 90, 80]
-ESTIMATED_COST_PER_SCORE = 0.003
 
 
 class JobSearchWorker(QThread):
@@ -130,13 +130,13 @@ class ScoreWorker(QThread):
         try:
             score = score_job(self.job_id, self.resume_text, self.job_description, self.job_title)
             self.finished_scoring.emit(score)
-        except ClaudeNotConfiguredError as error:
+        except LLMNotConfiguredError as error:
             self.failed.emit(str(error), False)
         except EmptyJobDescriptionError as error:
             self.failed.emit(str(error), False)
-        except ClaudeTimeoutError as error:
+        except LLMTimeoutError as error:
             self.failed.emit(str(error), True)
-        except ClaudeRequestError as error:
+        except LLMRequestError as error:
             self.failed.emit(str(error), True)
         except Exception as error:
             self.failed.emit(f"Scoring failed: {error}", True)
@@ -173,7 +173,7 @@ class SearchTab(QWidget):
         self.application_repository = ApplicationRepository()
         self.profile_repository = ProfileRepository()
         self.resume_service = ResumeService()
-        self.claude_service = ClaudeService()
+        self.llm_service = LLMService()
 
         self.worker: JobSearchWorker | None = None
         self.score_worker: ScoreWorker | None = None
@@ -730,9 +730,11 @@ class SearchTab(QWidget):
             QMessageBox.warning(self, "No Resume", "Please upload your resume in Settings first")
             return
 
-        if not self.claude_service.is_configured():
+        if not self.llm_service.is_configured("scoring"):
             QMessageBox.warning(
-                self, "Claude Not Configured", "Add ANTHROPIC_API_KEY to .env to enable scoring"
+                self,
+                "AI Provider Not Configured",
+                "Configure an API key for your selected scoring provider in Settings → AI Provider",
             )
             return
 
@@ -751,7 +753,7 @@ class SearchTab(QWidget):
         self.tailor_resume_button.hide()
         self.good_resume_label.hide()
         self.score_progress_bar.show()
-        self.score_status_label.setText("Scoring with Claude...")
+        self.score_status_label.setText("Scoring...")
 
     def _on_score_finished(self, score: JobScore) -> None:
         self.score_progress_bar.hide()
@@ -863,13 +865,15 @@ class SearchTab(QWidget):
             QMessageBox.warning(self, "No Resume", "Please upload your resume in Settings first")
             return
 
-        if not self.claude_service.is_configured():
+        if not self.llm_service.is_configured("scoring"):
             QMessageBox.warning(
-                self, "Claude Not Configured", "Add ANTHROPIC_API_KEY to .env to enable scoring"
+                self,
+                "AI Provider Not Configured",
+                "Configure an API key for your selected scoring provider in Settings → AI Provider",
             )
             return
 
-        estimated_cost = len(unscored_jobs) * ESTIMATED_COST_PER_SCORE
+        estimated_cost = len(unscored_jobs) * scoring_cost_for_model(self.profile_repository.get().scoring_model)
         confirmation = QMessageBox.question(
             self,
             "Score All",

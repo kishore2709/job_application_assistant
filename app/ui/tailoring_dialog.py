@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.db.repositories import JobRepository, TailoredResumeRepository
-from app.services.claude_service import ClaudeNotConfiguredError, ClaudeRequestError, ClaudeTimeoutError
+from app.services.llm_service import LLMNotConfiguredError, LLMRequestError, LLMTimeoutError
 from app.services.tailoring_service import ShortJobDescriptionError, rebuild_tailored_docx, tailor_resume
 
 
@@ -50,11 +50,11 @@ class TailorWorker(QThread):
             self.finished_tailoring.emit(result)
         except ShortJobDescriptionError as error:
             self.failed.emit(str(error), False)
-        except ClaudeNotConfiguredError as error:
+        except LLMNotConfiguredError as error:
             self.failed.emit(str(error), False)
-        except ClaudeTimeoutError as error:
+        except LLMTimeoutError as error:
             self.failed.emit(str(error), True)
-        except ClaudeRequestError as error:
+        except LLMRequestError as error:
             self.failed.emit(str(error), True)
         except Exception as error:
             self.failed.emit(f"Tailoring failed: {error}", True)
@@ -133,7 +133,7 @@ class TailoringDialog(QDialog):
         self.loading_widget = QWidget()
         layout = QVBoxLayout(self.loading_widget)
 
-        self.loading_label = QLabel("Tailoring resume with Claude...")
+        self.loading_label = QLabel("Tailoring resume...")
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.loading_label.setStyleSheet("font-size: 16px; font-weight: bold;")
 

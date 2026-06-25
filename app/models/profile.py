@@ -28,6 +28,14 @@ class ProfileSettings:
     salary_max: int | None = None
     work_preference: str = "Any"
     default_resume_path: str = ""
+    scoring_provider: str = "anthropic"
+    scoring_model: str = "claude-haiku-4-5-20251001"
+    tailoring_provider: str = "anthropic"
+    tailoring_model: str = "claude-sonnet-4-6"
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    google_api_key: str = ""
+    ollama_base_url: str = "http://localhost:11434"
     target_roles: list[TargetRole] = field(default_factory=list)
     blacklist_companies: list[BlacklistCompany] = field(default_factory=list)
 

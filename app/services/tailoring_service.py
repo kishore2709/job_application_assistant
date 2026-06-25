@@ -6,12 +6,10 @@ from docx import Document
 from app.db.repositories import ResumeRepository, TailoredResumeRepository
 from app.models.resume import Resume
 from app.models.tailored_resume import TailoredResume
-from app.services.claude_service import ClaudeService
+from app.services.llm_service import JD_PROMPT_LIMIT, RESUME_PROMPT_CHAR_BUDGET, LLMService
 from app.utils.file_utils import RESUMES_TAILORED_DIR, ensure_app_directories, unique_path
 
 JD_MIN_LENGTH = 100
-RESUME_PROMPT_CHAR_BUDGET = 4000
-JD_PROMPT_LIMIT = 2000
 HEADER_SCAN_LINES = 6
 
 JOB_TITLE_MAX_LENGTH = 25
@@ -22,69 +20,6 @@ COMPANY_REMOVE_WORDS = {"inc", "llc", "corp", "ltd", "co", "technologies", "solu
 CONTACT_LINE_PATTERN = re.compile(
     r"@|linkedin\.com|github\.com|\(\d{3}\)|\d{3}[-.\s]\d{3}[-.\s]\d{4}", re.IGNORECASE
 )
-NUMBERED_LINE_PATTERN = re.compile(r"^\s*(\d+)\.\s?(.*)$")
-
-SYSTEM_PROMPT = """You are helping a job seeker tailor their resume
-for a specific job. Your goal is to highlight
-relevant experience without changing facts.
-
-STRICT RULES — NEVER VIOLATE:
-- Keep resume headline EXACTLY as in original
-- Do not add domain keywords to headline
-  (no Payments, Banking, Healthcare, AI etc)
-- Do not change Lead to Senior or vice versa
-- Do not change any job titles in experience
-- Do not touch header section at all:
-  name, headline, contact info = completely untouched
-- Only tailor these sections:
-  summary bullets, skills section,
-  experience bullet points
-- Reword and reprioritize existing content only
-- Never invent employers, dates, tools, or experience
-- Never add technologies not in the original resume
-- Do not add metrics where original had none
-
-MAKE IT SOUND HUMAN — NOT AI GENERATED:
-- Vary sentence structure across bullets
-- Not every bullet should start with a power verb
-- Preserve the candidate's natural writing voice
-- Keep some informal professional phrasing
-- Slight variation in style is good
-- Do not make every line sound ATS-optimized
-- Keep the same level of formality as original
-- Avoid repetitive patterns across bullets
-- Do not over-polish — humans write with variation
-
-FORMATTING:
-- Use original resume DOCX as template
-- Replace only text content
-- Keep all fonts, colors, bold, styles exactly
-- Never change paragraph count or structure
-
-RESPONSE FORMAT (required so edits can be mapped back into the
-original document programmatically):
-- The resume below is provided as a numbered list, one line per paragraph
-- Return the SAME number of lines, in the SAME order, each line prefixed
-  with its original number and a period, e.g. "1. ", "2. ", ...
-- For header lines (name, headline, contact info — see line range below)
-  return that line's text completely unchanged
-- Do not merge, split, add, or remove lines
-- Return only the numbered list — no explanations, no markdown"""
-
-USER_PROMPT_TEMPLATE = """Job Title: {job_title}
-
-Job Description:
-{jd_text}
-
-Current Resume (numbered lines; lines 1-{header_line_count} are the header —
-name/headline/contact info — return those lines completely unchanged):
-{resume_text}
-
-Target Role Description:
-{role_description}
-
-Return the tailored resume as the same numbered list of lines.
-No explanations, no markdown, just the numbered lines."""
 
 
 class ShortJobDescriptionError(Exception):
@@ -122,16 +57,14 @@ def tailor_resume(
         original_lines, RESUME_PROMPT_CHAR_BUDGET
     )
 
-    user_prompt = USER_PROMPT_TEMPLATE.format(
-        job_title=job_title,
-        jd_text=jd_text[:JD_PROMPT_LIMIT],
-        resume_text=numbered_text,
-        role_description=role_description or "",
+    tailored_by_line_number = LLMService().tailor(
+        numbered_text,
+        jd_text[:JD_PROMPT_LIMIT],
+        job_title,
+        role_description,
+        profile,
         header_line_count=header_end_index + 1,
     )
-
-    response_text = ClaudeService().tailor_resume_text(SYSTEM_PROMPT, user_prompt)
-    tailored_by_line_number = _parse_numbered_response(response_text)
 
     final_lines = _apply_tailored_lines(paragraphs, header_end_index, tailored_by_line_number)
 
@@ -253,15 +186,6 @@ def _numbered_text_within_budget(lines: list[str], char_budget: int) -> tuple[st
         included.append(numbered_line)
         total += addition
     return "\n".join(included), len(included)
-
-
-def _parse_numbered_response(text: str) -> dict:
-    result = {}
-    for raw_line in text.splitlines():
-        match = NUMBERED_LINE_PATTERN.match(raw_line)
-        if match:
-            result[int(match.group(1))] = match.group(2)
-    return result
 
 
 def _build_file_name(company: str, job_title: str) -> str:

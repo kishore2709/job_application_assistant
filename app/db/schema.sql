@@ -13,6 +13,14 @@ CREATE TABLE IF NOT EXISTS profile_settings (
     salary_max INTEGER,
     work_preference TEXT DEFAULT 'Any',
     default_resume_path TEXT,
+    scoring_provider TEXT DEFAULT 'anthropic',
+    scoring_model TEXT DEFAULT 'claude-haiku-4-5-20251001',
+    tailoring_provider TEXT DEFAULT 'anthropic',
+    tailoring_model TEXT DEFAULT 'claude-sonnet-4-6',
+    anthropic_api_key TEXT,
+    openai_api_key TEXT,
+    google_api_key TEXT,
+    ollama_base_url TEXT DEFAULT 'http://localhost:11434',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

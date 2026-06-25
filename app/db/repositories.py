@@ -8,6 +8,7 @@ from app.models.resume import Resume
 from app.models.score import JobScore
 from app.models.search_preferences import SearchPreferences
 from app.models.tailored_resume import TailoredResume
+from app.utils import crypto
 from app.utils.constants import ADDITIONAL_BLACKLISTED_COMPANIES, DEFAULT_BLACKLISTED_COMPANIES
 
 
@@ -31,6 +32,14 @@ class ProfileRepository:
                 profile.salary_max = row["salary_max"]
                 profile.work_preference = row["work_preference"] or "Any"
                 profile.default_resume_path = row["default_resume_path"] or ""
+                profile.scoring_provider = row["scoring_provider"] or "anthropic"
+                profile.scoring_model = row["scoring_model"] or "claude-haiku-4-5-20251001"
+                profile.tailoring_provider = row["tailoring_provider"] or "anthropic"
+                profile.tailoring_model = row["tailoring_model"] or "claude-sonnet-4-6"
+                profile.anthropic_api_key = crypto.decrypt(row["anthropic_api_key"] or "")
+                profile.openai_api_key = crypto.decrypt(row["openai_api_key"] or "")
+                profile.google_api_key = crypto.decrypt(row["google_api_key"] or "")
+                profile.ollama_base_url = row["ollama_base_url"] or "http://localhost:11434"
 
             profile.target_roles = [
                 TargetRole(
@@ -95,6 +104,37 @@ class ProfileRepository:
                 [(company.company_name,) for company in profile.blacklist_companies],
             )
 
+            connection.commit()
+        finally:
+            connection.close()
+
+    def save_llm_settings(self, profile: ProfileSettings) -> None:
+        """Writes only the 8 AI-provider columns, independent of the main
+        Save button's save() — so testing/saving provider settings never
+        touches profile fields, target roles, or the blacklist.
+        """
+        connection = get_connection()
+        try:
+            connection.execute(
+                """
+                UPDATE profile_settings SET
+                    scoring_provider = ?, scoring_model = ?,
+                    tailoring_provider = ?, tailoring_model = ?,
+                    anthropic_api_key = ?, openai_api_key = ?, google_api_key = ?,
+                    ollama_base_url = ?, updated_at = datetime('now')
+                WHERE id = 1
+                """,
+                (
+                    profile.scoring_provider,
+                    profile.scoring_model,
+                    profile.tailoring_provider,
+                    profile.tailoring_model,
+                    crypto.encrypt(profile.anthropic_api_key),
+                    crypto.encrypt(profile.openai_api_key),
+                    crypto.encrypt(profile.google_api_key),
+                    profile.ollama_base_url,
+                ),
+            )
             connection.commit()
         finally:
             connection.close()

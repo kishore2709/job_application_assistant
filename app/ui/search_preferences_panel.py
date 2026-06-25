@@ -80,8 +80,8 @@ class SearchPreferencesPanel(QWidget):
         # to whatever's left over — leaving Posted/Filters/Source below the
         # fold even on a tall window. Pin it to the height all 5 sections
         # actually need so they render without scrolling in the common case.
-        self.content_scroll_area.setMinimumHeight(560)
-        self.content_scroll_area.setMaximumHeight(560)
+        self.content_scroll_area.setMinimumHeight(580)
+        self.content_scroll_area.setMaximumHeight(580)
         self.content_scroll_area.setWidget(self.content_widget)
         outer_layout.addWidget(self.content_scroll_area)
 
@@ -94,6 +94,7 @@ class SearchPreferencesPanel(QWidget):
 
     def _build_titles_group(self) -> QGroupBox:
         group = QGroupBox("Job Titles")
+        group.setProperty("sectionStyle", "major")
         layout = QVBoxLayout()
 
         self.titles_container = QWidget()
@@ -206,7 +207,7 @@ class SearchPreferencesPanel(QWidget):
             self.date_posted_radios[value] = radio
             layout.addWidget(radio)
 
-        group.setMinimumHeight(165)
+        group.setMinimumHeight(195)
 
         group.setLayout(layout)
         return group
@@ -449,9 +450,11 @@ class SearchPreferencesPanel(QWidget):
     def _load_preferences(self) -> None:
         self._loading = True
         is_first_launch = False
+        titles_were_empty = False
         try:
             preferences = self.preferences_repository.get()
             is_first_launch = not preferences.updated_at
+            titles_were_empty = not preferences.selected_titles
             self._current_theme = preferences.theme
             self.hide_sponsorship_checkbox.setChecked(preferences.hide_sponsorship_restricted)
 
@@ -467,7 +470,11 @@ class SearchPreferencesPanel(QWidget):
                     checkbox.setChecked(True)
             self._rebuild_state_pills()
 
-            if is_first_launch:
+            if not preferences.selected_titles:
+                # Empty almost always means "never configured" (first launch,
+                # or every target role added after the last save) rather than
+                # "deliberately deselected everything" — defaulting to all
+                # checked is the safer assumption either way.
                 self._set_all_titles(True)
             else:
                 selected_titles = set(preferences.selected_titles)
@@ -491,5 +498,5 @@ class SearchPreferencesPanel(QWidget):
         finally:
             self._loading = False
 
-        if is_first_launch:
+        if is_first_launch or titles_were_empty:
             self._save_preferences()

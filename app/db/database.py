@@ -41,6 +41,36 @@ def _apply_migrations(connection: sqlite3.Connection) -> None:
             "ALTER TABLE search_preferences ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark'"
         )
 
+    profile_settings_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(profile_settings)")
+    }
+    if profile_settings_columns and "scoring_provider" not in profile_settings_columns:
+        connection.execute(
+            "ALTER TABLE profile_settings ADD COLUMN scoring_provider TEXT DEFAULT 'anthropic'"
+        )
+    if profile_settings_columns and "scoring_model" not in profile_settings_columns:
+        connection.execute(
+            "ALTER TABLE profile_settings ADD COLUMN scoring_model TEXT DEFAULT 'claude-haiku-4-5-20251001'"
+        )
+    if profile_settings_columns and "tailoring_provider" not in profile_settings_columns:
+        connection.execute(
+            "ALTER TABLE profile_settings ADD COLUMN tailoring_provider TEXT DEFAULT 'anthropic'"
+        )
+    if profile_settings_columns and "tailoring_model" not in profile_settings_columns:
+        connection.execute(
+            "ALTER TABLE profile_settings ADD COLUMN tailoring_model TEXT DEFAULT 'claude-sonnet-4-6'"
+        )
+    if profile_settings_columns and "anthropic_api_key" not in profile_settings_columns:
+        connection.execute("ALTER TABLE profile_settings ADD COLUMN anthropic_api_key TEXT")
+    if profile_settings_columns and "openai_api_key" not in profile_settings_columns:
+        connection.execute("ALTER TABLE profile_settings ADD COLUMN openai_api_key TEXT")
+    if profile_settings_columns and "google_api_key" not in profile_settings_columns:
+        connection.execute("ALTER TABLE profile_settings ADD COLUMN google_api_key TEXT")
+    if profile_settings_columns and "ollama_base_url" not in profile_settings_columns:
+        connection.execute(
+            "ALTER TABLE profile_settings ADD COLUMN ollama_base_url TEXT DEFAULT 'http://localhost:11434'"
+        )
+
     _migrate_applications_table(connection)
 
 

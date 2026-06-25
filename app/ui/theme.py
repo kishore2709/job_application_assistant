@@ -88,24 +88,25 @@ QTabBar::tab:hover {{
 QGroupBox {{
     background-color: {colors['card']};
     border: 1px solid {colors['border']};
+    border-left: 3px solid {colors['border']};
     border-radius: 8px;
     margin-top: 10px;
     padding-top: 14px;
     font-weight: bold;
 }}
+QGroupBox[sectionStyle="major"] {{
+    border-left: 3px solid {colors['primary']};
+}}
 QGroupBox::title {{
     subcontrol-origin: margin;
     left: 10px;
-    padding: 0 6px 0 3px;
+    padding: 0 6px;
     color: {colors['primary']};
-    border-left: 3px solid {colors['primary']};
 }}
 QGroupBox[sectionStyle="minor"]::title {{
     color: {colors['subtext']};
     font-size: 10px;
     font-weight: normal;
-    border-left: none;
-    padding-left: 6px;
 }}
 QLineEdit, QComboBox, QSpinBox, QDateEdit, QTextEdit, QListWidget {{
     background-color: {colors['card']};

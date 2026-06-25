@@ -2,7 +2,7 @@ import re
 
 from app.db.repositories import ScoreRepository
 from app.models.score import JobScore
-from app.services.claude_service import ClaudeService
+from app.services.llm_service import LLMService
 
 KEYWORD_MIN_LENGTH = 3
 NOISE_KEYWORDS = {
@@ -37,7 +37,7 @@ def score_job(job_id: int, resume_text: str, job_description: str, job_title: st
     if not job_description or not job_description.strip():
         raise EmptyJobDescriptionError("No job description available to score against")
 
-    result = ClaudeService().score_resume_against_jd(resume_text, job_description, job_title)
+    result = LLMService().score(resume_text, job_description, job_title)
 
     score = JobScore(
         job_id=job_id,
