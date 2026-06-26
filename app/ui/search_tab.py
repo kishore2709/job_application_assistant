@@ -1,9 +1,10 @@
+import json
 import shutil
 import time
 from datetime import date
 
 from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices
+from PyQt6.QtGui import QColor, QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QFileDialog,
     QGraphicsDropShadowEffect,
@@ -14,6 +15,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -26,6 +28,7 @@ from app.db.repositories import (
     ApplicationRepository,
     JobRepository,
     ProfileRepository,
+    SearchPreferencesRepository,
     TailoredResumeRepository,
 )
 from app.models.score import JobScore
@@ -44,8 +47,7 @@ from app.ui.tailoring_dialog import TailoringDialog
 from app.ui.theme import SCORE_COLORS
 from automation.browser_manager import BrowserLaunchError, BrowserManager
 
-RESULT_COLUMNS = ["Title", "Company", "Location", "Source", "Posted", "Match Score", "Status"]
-RESULT_COLUMN_WIDTHS = [200, 150, 130, 80, 100, 90, 80]
+RESULT_COLUMNS = ["Title", "Company", "Location", "Posted", "Score", "Status"]
 
 
 class JobSearchWorker(QThread):
@@ -210,12 +212,16 @@ class SearchTab(QWidget):
         outer_layout.addWidget(self._build_status_row())
         outer_layout.addWidget(self._build_manual_step_banner())
 
-        splitter = QSplitter()
-        splitter.addWidget(self._build_results_table())
-        splitter.addWidget(self._build_detail_panel())
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 1)
-        outer_layout.addWidget(splitter, 1)
+        self.splitter = QSplitter()
+        self.splitter.addWidget(self._build_results_table())
+        self.splitter.addWidget(self._build_detail_panel())
+        self.splitter.setStretchFactor(0, 9)
+        self.splitter.setStretchFactor(1, 11)
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        saved_pos = SearchPreferencesRepository().get_splitter_position()
+        if saved_pos > 0:
+            self.splitter.setSizes([saved_pos, max(saved_pos, 1)])
+        outer_layout.addWidget(self.splitter, 1)
 
         bottom_row = QHBoxLayout()
         self.load_more_button = QPushButton("Load More Results")
@@ -257,10 +263,18 @@ class SearchTab(QWidget):
         self.results_table = QTableWidget(0, len(RESULT_COLUMNS))
         self.results_table.setHorizontalHeaderLabels(RESULT_COLUMNS)
         header = self.results_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for column, width in enumerate(RESULT_COLUMN_WIDTHS):
-            self.results_table.setColumnWidth(column, width)
         header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)       # Title
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)   # Company
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)   # Location
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)         # Posted
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)         # Score
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)         # Status
+        self.results_table.setColumnWidth(1, 120)
+        self.results_table.setColumnWidth(2, 110)
+        self.results_table.setColumnWidth(3, 85)
+        self.results_table.setColumnWidth(4, 65)
+        self.results_table.setColumnWidth(5, 65)
         self.results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.results_table.currentCellChanged.connect(lambda *_: self._on_row_selected())
@@ -269,6 +283,8 @@ class SearchTab(QWidget):
     def _build_detail_panel(self) -> QWidget:
         panel = QWidget()
         outer_layout = QVBoxLayout(panel)
+        outer_layout.setSpacing(0)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
 
         shadow = QGraphicsDropShadowEffect()
         shadow.setBlurRadius(20)
@@ -276,33 +292,82 @@ class SearchTab(QWidget):
         shadow.setOffset(0, 2)
         panel.setGraphicsEffect(shadow)
 
+        # Placeholder shown when no job is selected
         self.detail_placeholder_label = QLabel("Select a job from the list to see details")
         self.detail_placeholder_label.setWordWrap(True)
         self.detail_placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer_layout.addWidget(self.detail_placeholder_label)
 
-        self.detail_content_widget = QWidget()
-        layout = QVBoxLayout(self.detail_content_widget)
+        # ── HEADER (title / company / meta) — fixed, never scrolls ──────────
+        self.detail_header_widget = QWidget()
+        header_layout = QVBoxLayout(self.detail_header_widget)
+        header_layout.setSpacing(4)
+        header_layout.setContentsMargins(8, 8, 8, 4)
 
         self.detail_title_label = QLabel("")
         self.detail_title_label.setWordWrap(True)
-        self.detail_company_label = QLabel("")
-        self.detail_meta_label = QLabel("")
+        self.detail_title_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.detail_title_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
 
-        layout.addWidget(self.detail_title_label)
-        layout.addWidget(self.detail_company_label)
-        layout.addWidget(self.detail_meta_label)
-        layout.addWidget(self._build_score_panel())
+        self.detail_company_label = QLabel("")
+        self.detail_company_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.detail_company_label.setFont(QFont("Arial", 10))
+
+        self.detail_meta_label = QLabel("")
+        self.detail_meta_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.detail_meta_label.setFont(QFont("Arial", 9))
+
+        header_layout.addWidget(self.detail_title_label)
+        header_layout.addWidget(self.detail_company_label)
+        header_layout.addWidget(self.detail_meta_label)
+        self.detail_header_widget.setVisible(False)
+        outer_layout.addWidget(self.detail_header_widget)
+
+        # ── SCROLLABLE CONTENT (score + keywords + reasoning + JD) ──────────
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(6)
+        scroll_layout.setContentsMargins(8, 8, 8, 8)
+
+        scroll_layout.addWidget(self._build_score_panel())
+
+        jd_header = QLabel("Job Description")
+        jd_header.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        jd_header.setTextFormat(Qt.TextFormat.PlainText)
+        jd_header.setStyleSheet("color: #2F81F7; font-weight: bold; font-size: 9px;")
+        scroll_layout.addWidget(jd_header)
 
         self.detail_description = QTextEdit()
         self.detail_description.setReadOnly(True)
         self.detail_description.setAcceptRichText(False)
-        self.detail_description.setStyleSheet(
-            "font-size: 10px; color: #E6EDF3; line-height: normal;"
-        )
+        self.detail_description.setFont(QFont("Arial", 9))
+        self.detail_description.setMinimumHeight(200)
+        scroll_layout.addWidget(self.detail_description, 1)
+
+        self.detail_score_scroll = QScrollArea()
+        self.detail_score_scroll.setWidget(scroll_content)
+        self.detail_score_scroll.setWidgetResizable(True)
+        self.detail_score_scroll.setVisible(False)
+        outer_layout.addWidget(self.detail_score_scroll, 1)
+
+        # ── FOOTER (resume indicator + buttons) — fixed, never scrolls ──────
+        self.detail_footer_widget = QWidget()
+        footer_layout = QVBoxLayout(self.detail_footer_widget)
+        footer_layout.setSpacing(4)
+        footer_layout.setContentsMargins(8, 4, 8, 8)
+
+        self.good_resume_label = QLabel("Resume looks good for this job — apply with default resume")
+        self.good_resume_label.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.good_resume_label.setWordWrap(True)
+        self.good_resume_label.setStyleSheet("color: #66bb6a;")
+        self.good_resume_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.good_resume_label.hide()
+        footer_layout.addWidget(self.good_resume_label)
 
         self.resume_indicator_label = QLabel("")
         self.resume_indicator_label.setWordWrap(True)
+        self.resume_indicator_label.setTextFormat(Qt.TextFormat.PlainText)
+        footer_layout.addWidget(self.resume_indicator_label)
 
         tailoring_row = QHBoxLayout()
         self.tailor_resume_button_main = QPushButton("Tailor Resume")
@@ -320,6 +385,7 @@ class SearchTab(QWidget):
         tailoring_row.addWidget(self.tailor_resume_button_main)
         tailoring_row.addWidget(self.view_tailored_button)
         tailoring_row.addWidget(self.download_resume_button)
+        footer_layout.addLayout(tailoring_row)
 
         button_row = QHBoxLayout()
         self.apply_button = QPushButton("Apply")
@@ -342,26 +408,29 @@ class SearchTab(QWidget):
         button_row.addWidget(self.score_button)
         button_row.addWidget(self.save_to_tracker_button)
         button_row.addWidget(self.mark_applied_button)
+        footer_layout.addLayout(button_row)
 
-        layout.addWidget(self.detail_description, 1)
-        layout.addWidget(self.resume_indicator_label)
-        layout.addLayout(tailoring_row)
-        layout.addLayout(button_row)
+        self.detail_footer_widget.setVisible(False)
+        outer_layout.addWidget(self.detail_footer_widget)
 
-        outer_layout.addWidget(self.detail_content_widget)
-        self.detail_content_widget.setVisible(False)
         return panel
 
-    def _build_score_panel(self) -> QGroupBox:
-        group = QGroupBox("Match Score")
-        layout = QVBoxLayout()
+    def _build_score_panel(self) -> QWidget:
+        group = QWidget()
+        layout = QVBoxLayout(group)
+        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         self.score_value_label = QLabel("")
+        self.score_value_label.setFont(QFont("Arial", 28, QFont.Weight.Bold))
         self.score_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.score_value_label.setStyleSheet("font-size: 28px; font-weight: bold; padding: 6px;")
+        self.score_value_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.score_value_label.setFixedHeight(50)
+        self.score_value_label.setStyleSheet("padding: 6px; border-radius: 4px;")
         self.score_value_label.hide()
 
         self.score_status_label = QLabel("")
+        self.score_status_label.setFont(QFont("Arial", 10))
         self.score_status_label.setWordWrap(True)
         self.score_status_label.setTextFormat(Qt.TextFormat.PlainText)
 
@@ -375,39 +444,53 @@ class SearchTab(QWidget):
         self.retry_score_button.clicked.connect(self._on_retry_score_clicked)
         self.retry_score_button.hide()
 
+        _SECTION_STYLE = "color: #2F81F7; font-weight: bold; font-size: 9px;"
+
         self.matched_keywords_header = QLabel("Matched Keywords")
-        self.matched_keywords_header.setStyleSheet("font-weight: bold;")
+        self.matched_keywords_header.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.matched_keywords_header.setTextFormat(Qt.TextFormat.PlainText)
+        self.matched_keywords_header.setStyleSheet(_SECTION_STYLE)
+
         self.matched_keywords_label = QLabel("")
+        self.matched_keywords_label.setFont(QFont("Arial", 10))
         self.matched_keywords_label.setWordWrap(True)
-        self.matched_keywords_label.setTextFormat(Qt.TextFormat.RichText)
+        self.matched_keywords_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.matched_keywords_label.setStyleSheet("color: #3FB950;")
 
         self.missing_keywords_header = QLabel("Missing Keywords")
-        self.missing_keywords_header.setStyleSheet("font-weight: bold;")
+        self.missing_keywords_header.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.missing_keywords_header.setTextFormat(Qt.TextFormat.PlainText)
+        self.missing_keywords_header.setStyleSheet(_SECTION_STYLE)
+
         self.missing_keywords_label = QLabel("")
+        self.missing_keywords_label.setFont(QFont("Arial", 10))
         self.missing_keywords_label.setWordWrap(True)
-        self.missing_keywords_label.setTextFormat(Qt.TextFormat.RichText)
+        self.missing_keywords_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.missing_keywords_label.setStyleSheet("color: #F85149;")
 
         self.reasoning_header = QLabel("Reasoning")
-        self.reasoning_header.setStyleSheet("font-weight: bold;")
-        self.reasoning_label = QLabel("")
-        self.reasoning_label.setWordWrap(True)
-        self.reasoning_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.reasoning_header.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.reasoning_header.setTextFormat(Qt.TextFormat.PlainText)
+        self.reasoning_header.setStyleSheet(_SECTION_STYLE)
+
+        self.reasoning_label = QTextEdit()
+        self.reasoning_label.setFont(QFont("Arial", 9))
+        self.reasoning_label.setReadOnly(True)
+        self.reasoning_label.setAcceptRichText(False)
+        self.reasoning_label.setMaximumHeight(80)
+        self.reasoning_label.setStyleSheet("border: 1px solid #30363D;")
 
         self.recommendation_header = QLabel("Recommendation")
-        self.recommendation_header.setStyleSheet("font-weight: bold;")
-        self.recommendation_label = QLabel("")
-        self.recommendation_label.setWordWrap(True)
-        self.recommendation_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.recommendation_header.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+        self.recommendation_header.setTextFormat(Qt.TextFormat.PlainText)
+        self.recommendation_header.setStyleSheet(_SECTION_STYLE)
 
-        self.tailor_resume_button = QPushButton("Tailor Resume")
-        self.tailor_resume_button.setStyleSheet("font-weight: bold; padding: 6px;")
-        self.tailor_resume_button.clicked.connect(self._on_tailor_resume_clicked)
-        self.tailor_resume_button.hide()
-
-        self.good_resume_label = QLabel("Resume looks good for this job — apply with default resume")
-        self.good_resume_label.setWordWrap(True)
-        self.good_resume_label.setStyleSheet("font-weight: bold; color: #66bb6a;")
-        self.good_resume_label.hide()
+        self.recommendation_label = QTextEdit()
+        self.recommendation_label.setFont(QFont("Arial", 9))
+        self.recommendation_label.setReadOnly(True)
+        self.recommendation_label.setAcceptRichText(False)
+        self.recommendation_label.setMaximumHeight(80)
+        self.recommendation_label.setStyleSheet("border: 1px solid #30363D;")
 
         for widget in (
             self.score_value_label,
@@ -422,13 +505,10 @@ class SearchTab(QWidget):
             self.reasoning_label,
             self.recommendation_header,
             self.recommendation_label,
-            self.tailor_resume_button,
-            self.good_resume_label,
         ):
             layout.addWidget(widget)
 
         self._set_score_detail_visible(False)
-        group.setLayout(layout)
         self.score_group = group
         return group
 
@@ -527,6 +607,9 @@ class SearchTab(QWidget):
         self._reset_search_buttons()
         QMessageBox.critical(self, "Search Failed", message)
 
+    def _on_splitter_moved(self, pos: int, _index: int) -> None:
+        SearchPreferencesRepository().save_splitter_position(self.splitter.sizes()[0])
+
     def _reset_search_buttons(self) -> None:
         self.search_button.setEnabled(True)
         self.search_button.setText("Search")
@@ -552,11 +635,13 @@ class SearchTab(QWidget):
             if detect_sponsorship_restriction(job.description):
                 title_text = f"⚠️ {job.title}"
             for column, value in enumerate(
-                [title_text, job.company, job.location, job.source, job.posted_date, score_text, job.status]
+                [title_text, job.company, job.location, job.posted_date, score_text, job.status]
             ):
                 item = QTableWidgetItem(value)
                 if column == 0 and title_text != job.title:
                     item.setToolTip("Review visa requirements before applying")
+                if column == 4:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.results_table.setItem(row, column, item)
             if job.score is not None:
                 self._colorize_score_cell(row, int(job.score))
@@ -565,19 +650,27 @@ class SearchTab(QWidget):
         row = self.results_table.currentRow()
         if row < 0 or row >= len(self.current_jobs):
             self.selected_job = None
-            self.detail_content_widget.setVisible(False)
-            self.detail_placeholder_label.setVisible(True)
+            self._set_detail_visible(False)
             return
         self._show_job_detail(self.current_jobs[row])
 
+    def _set_detail_visible(self, visible: bool) -> None:
+        self.detail_placeholder_label.setVisible(not visible)
+        self.detail_header_widget.setVisible(visible)
+        self.detail_score_scroll.setVisible(visible)
+        self.detail_footer_widget.setVisible(visible)
+
     def _show_job_detail(self, job) -> None:
-        self.detail_placeholder_label.setVisible(False)
-        self.detail_content_widget.setVisible(True)
+        self._set_detail_visible(True)
         self.selected_job = job
-        self.detail_title_label.setText(job.title)
-        self.detail_company_label.setText(job.company)
-        self.detail_meta_label.setText(f"{job.location}  •  Posted {job.posted_date or 'unknown'}")
-        self.detail_description.setPlainText(job.description or "(No description available.)")
+        self.detail_title_label.setText(self._clean_text(job.title))
+        self.detail_company_label.setText(self._clean_text(job.company))
+        self.detail_meta_label.setText(
+            self._clean_text(f"{job.location}  •  Posted {job.posted_date or 'unknown'}")
+        )
+        self.detail_description.setPlainText(
+            self._clean_text(job.description) or "(No description available.)"
+        )
         self.apply_button.setEnabled(bool(job.url))
         self.score_button.setEnabled(True)
         self.tailor_resume_button_main.setEnabled(True)
@@ -750,7 +843,6 @@ class SearchTab(QWidget):
         self._set_score_detail_visible(False)
         self.score_value_label.hide()
         self.retry_score_button.hide()
-        self.tailor_resume_button.hide()
         self.good_resume_label.hide()
         self.score_progress_bar.show()
         self.score_status_label.setText("Scoring...")
@@ -770,7 +862,6 @@ class SearchTab(QWidget):
         self.score_progress_bar.hide()
         self.retry_score_button.hide()
         self.score_value_label.hide()
-        self.tailor_resume_button.hide()
         self.good_resume_label.hide()
         self.score_status_label.setText("")
         self._set_score_detail_visible(False)
@@ -794,29 +885,26 @@ class SearchTab(QWidget):
         self.score_status_label.setText("")
 
         background, text_color = self._score_colors(score.score)
-        self.score_value_label.setText(f"{score.score}")
+        self.score_value_label.setText(str(int(score.score)))
         self.score_value_label.setStyleSheet(
-            f"font-size: 28px; font-weight: bold; padding: 6px; "
-            f"background-color: {background}; color: {text_color}; border-radius: 6px;"
+            f"background: {background}; color: white; border-radius: 4px; padding: 6px;"
         )
         self.score_value_label.show()
 
-        self.matched_keywords_label.setText(
-            self._render_keyword_pills(score.matched_keywords, "#1A7F37", "#3FB950")
+        self.matched_keywords_label.setText(self._clean_text(self._format_keywords(score.matched_keywords)))
+        self.missing_keywords_label.setText(self._clean_text(self._format_keywords(score.missing_keywords)))
+        self.reasoning_label.setPlainText(
+            self._clean_text(score.reasoning) or "(No reasoning provided.)"
         )
-        self.missing_keywords_label.setText(
-            self._render_keyword_pills(score.missing_keywords, "#6E1C1C", "#F85149")
+        self.recommendation_label.setPlainText(
+            self._clean_text(score.recommendation) or "(No recommendation provided.)"
         )
-        self.reasoning_label.setText(score.reasoning or "(No reasoning provided.)")
-        self.recommendation_label.setText(score.recommendation or "(No recommendation provided.)")
         self._set_score_detail_visible(True)
 
         if score.score >= 90:
-            self.tailor_resume_button.hide()
             self.good_resume_label.show()
         else:
             self.good_resume_label.hide()
-            self.tailor_resume_button.show()
 
     @staticmethod
     def _score_colors(score: int) -> tuple[str, str]:
@@ -827,26 +915,41 @@ class SearchTab(QWidget):
         return SCORE_COLORS["low"]
 
     @staticmethod
-    def _render_keyword_pills(keywords: list[str], background: str, text_color: str) -> str:
-        if not keywords:
-            return "<i>None</i>"
-        style = (
-            f"background-color:{background}; color:{text_color}; "
-            "padding:2px 8px; border-radius:10px;"
-        )
-        return "&nbsp;".join(f'<span style="{style}">{keyword}</span>' for keyword in keywords)
+    def _clean_text(text: str) -> str:
+        if not text:
+            return ""
+        if isinstance(text, bytes):
+            text = text.decode('utf-8', errors='ignore')
+        text = str(text).strip()
+        text = text.replace('\x00', '')
+        text = text.replace('\r\n', '\n').replace('\r', '\n')
+        if text.startswith('"') and text.endswith('"'):
+            text = text[1:-1]
+        return text
+
+    @staticmethod
+    def _format_keywords(keywords) -> str:
+        if isinstance(keywords, list):
+            return ", ".join(str(k) for k in keywords) if keywords else "(none)"
+        if isinstance(keywords, str):
+            try:
+                parsed = json.loads(keywords)
+                return ", ".join(str(k) for k in parsed) if parsed else "(none)"
+            except Exception:
+                return keywords if keywords else "(none)"
+        return "(none)"
 
     def _update_table_score_cell(self, score: JobScore) -> None:
         for row, job in enumerate(self.current_jobs):
             if job.id == score.job_id:
                 job.score = score.score
-                self.results_table.setItem(row, 5, QTableWidgetItem(str(score.score)))
+                self.results_table.setItem(row, 4, QTableWidgetItem(str(score.score)))
                 self._colorize_score_cell(row, score.score)
                 break
 
     def _colorize_score_cell(self, row: int, score: int) -> None:
         background, text_color = self._score_colors(score)
-        item = self.results_table.item(row, 5)
+        item = self.results_table.item(row, 4)
         if item is not None:
             item.setBackground(QColor(background))
             item.setForeground(QColor(text_color))
@@ -911,7 +1014,7 @@ class SearchTab(QWidget):
         self.selected_job.status = "Saved"
         row = self.results_table.currentRow()
         if row >= 0:
-            self.results_table.setItem(row, 6, QTableWidgetItem("Saved"))
+            self.results_table.setItem(row, 5, QTableWidgetItem("Saved"))
         self._update_tracker_buttons(self.selected_job)
         QMessageBox.information(self, "Saved", "Job saved to your application tracker.")
 
@@ -923,6 +1026,6 @@ class SearchTab(QWidget):
         self.selected_job.status = "Applied"
         row = self.results_table.currentRow()
         if row >= 0:
-            self.results_table.setItem(row, 6, QTableWidgetItem("Applied"))
+            self.results_table.setItem(row, 5, QTableWidgetItem("Applied"))
         self._update_tracker_buttons(self.selected_job)
         QMessageBox.information(self, "Marked as Applied", "Application status updated to Applied.")

@@ -94,9 +94,6 @@ QGroupBox {{
     padding-top: 14px;
     font-weight: bold;
 }}
-QGroupBox[sectionStyle="major"] {{
-    border-left: 3px solid {colors['primary']};
-}}
 QGroupBox::title {{
     subcontrol-origin: margin;
     left: 10px;
@@ -104,6 +101,8 @@ QGroupBox::title {{
     color: {colors['primary']};
 }}
 QGroupBox[sectionStyle="minor"]::title {{
+    left: 10px;
+    padding: 0 6px;
     color: {colors['subtext']};
     font-size: 10px;
     font-weight: normal;

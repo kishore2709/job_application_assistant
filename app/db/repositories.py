@@ -798,3 +798,24 @@ class SearchPreferencesRepository:
             connection.commit()
         finally:
             connection.close()
+
+    def get_splitter_position(self) -> int:
+        connection = get_connection()
+        try:
+            row = connection.execute(
+                "SELECT splitter_position FROM search_preferences WHERE id = 1"
+            ).fetchone()
+            return int(row["splitter_position"]) if row and row["splitter_position"] else 0
+        finally:
+            connection.close()
+
+    def save_splitter_position(self, position: int) -> None:
+        connection = get_connection()
+        try:
+            connection.execute(
+                "UPDATE search_preferences SET splitter_position = ? WHERE id = 1",
+                (position,),
+            )
+            connection.commit()
+        finally:
+            connection.close()

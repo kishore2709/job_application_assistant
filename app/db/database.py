@@ -40,6 +40,10 @@ def _apply_migrations(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE search_preferences ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark'"
         )
+    if search_preferences_columns and "splitter_position" not in search_preferences_columns:
+        connection.execute(
+            "ALTER TABLE search_preferences ADD COLUMN splitter_position INTEGER NOT NULL DEFAULT 0"
+        )
 
     profile_settings_columns = {
         row["name"] for row in connection.execute("PRAGMA table_info(profile_settings)")

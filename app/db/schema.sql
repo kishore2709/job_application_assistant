@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS search_preferences (
     hide_sponsorship_restricted INTEGER NOT NULL DEFAULT 0,
     source TEXT NOT NULL DEFAULT 'Both',
     theme TEXT NOT NULL DEFAULT 'dark',
+    splitter_position INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
