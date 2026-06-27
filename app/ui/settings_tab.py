@@ -1,3 +1,5 @@
+import re
+
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -132,15 +134,29 @@ class SettingsTab(QWidget):
         resume_row.addWidget(self.default_resume_date_label)
         resume_row.addWidget(upload_resume_button)
 
+        _ERR_STYLE = "color: #F85149; font-size: 10px;"
+        self.email_error = QLabel("")
+        self.email_error.setStyleSheet(_ERR_STYLE)
+        self.linkedin_error = QLabel("")
+        self.linkedin_error.setStyleSheet(_ERR_STYLE)
+        self.github_error = QLabel("")
+        self.github_error.setStyleSheet(_ERR_STYLE)
+        self.salary_error = QLabel("")
+        self.salary_error.setStyleSheet(_ERR_STYLE)
+
         form_layout.addRow("Full Name", self.full_name_input)
         form_layout.addRow("Email", self.email_input)
+        form_layout.addRow("", self.email_error)
         form_layout.addRow("Phone", self.phone_input)
         form_layout.addRow("LinkedIn URL", self.linkedin_input)
+        form_layout.addRow("", self.linkedin_error)
         form_layout.addRow("GitHub URL", self.github_input)
+        form_layout.addRow("", self.github_error)
         form_layout.addRow("Location", self.location_input)
         form_layout.addRow("Visa Status", self.visa_status_input)
         form_layout.addRow("Salary Min", self.salary_min_input)
         form_layout.addRow("Salary Max", self.salary_max_input)
+        form_layout.addRow("", self.salary_error)
         form_layout.addRow("Work Preference", self.work_preference_input)
         form_layout.addRow("Default Resume", resume_row)
 
@@ -638,16 +654,52 @@ class SettingsTab(QWidget):
         self._update_cost_estimate()
 
     def save_settings(self) -> None:
+        # --- Validation ---
+        has_error = False
+
+        email = self.email_input.text().strip()
+        if email and not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+            self.email_error.setText("Enter a valid email address (e.g. name@example.com)")
+            has_error = True
+        else:
+            self.email_error.setText("")
+
+        linkedin = self.linkedin_input.text().strip()
+        if linkedin and "linkedin.com" not in linkedin:
+            self.linkedin_error.setText("Must be a linkedin.com URL")
+            has_error = True
+        else:
+            self.linkedin_error.setText("")
+
+        github = self.github_input.text().strip()
+        if github and "github.com" not in github:
+            self.github_error.setText("Must be a github.com URL")
+            has_error = True
+        else:
+            self.github_error.setText("")
+
+        sal_min = self.salary_min_input.value()
+        sal_max = self.salary_max_input.value()
+        if sal_min > 0 and sal_max > 0 and sal_min > sal_max:
+            self.salary_error.setText("Min salary must be ≤ max salary")
+            has_error = True
+        else:
+            self.salary_error.setText("")
+
+        if has_error:
+            return
+
+        # --- Save ---
         profile = ProfileSettings(
             full_name=self.full_name_input.text().strip(),
-            email=self.email_input.text().strip(),
+            email=email,
             phone=self.phone_input.text().strip(),
-            linkedin_url=self.linkedin_input.text().strip(),
-            github_url=self.github_input.text().strip(),
+            linkedin_url=linkedin,
+            github_url=github,
             location=self.location_input.text().strip(),
             visa_status=self.visa_status_input.text().strip() or DEFAULT_VISA_STATUS,
-            salary_min=self.salary_min_input.value() or None,
-            salary_max=self.salary_max_input.value() or None,
+            salary_min=sal_min or None,
+            salary_max=sal_max or None,
             work_preference=self.work_preference_input.currentText(),
             default_resume_path=self._default_resume_path,
         )

@@ -11,6 +11,7 @@ class SearchPreferences:
     fulltime_only: bool = True
     easy_apply_only: bool = False
     hide_sponsorship_restricted: bool = False
+    hide_clearance_jobs: bool = True
     source: str = "Both"
     theme: str = "dark"
     updated_at: str = ""

@@ -513,6 +513,25 @@ class ApplicationRepository:
         finally:
             connection.close()
 
+    def dismiss_reminder(self, application_id: int) -> None:
+        connection = get_connection()
+        try:
+            connection.execute(
+                "UPDATE applications SET is_dismissed = 1, updated_at = datetime('now') WHERE id = ?",
+                (application_id,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def delete(self, application_id: int) -> None:
+        connection = get_connection()
+        try:
+            connection.execute("DELETE FROM applications WHERE id = ?", (application_id,))
+            connection.commit()
+        finally:
+            connection.close()
+
     def list_all(self) -> list[Application]:
         connection = get_connection()
         try:
@@ -541,6 +560,7 @@ class ApplicationRepository:
             recruiter_contact=row["recruiter_contact"] or "",
             notes=row["notes"] or "",
             follow_up_date=row["follow_up_date"] or "",
+            is_dismissed=bool(row["is_dismissed"]) if "is_dismissed" in row.keys() else False,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -752,6 +772,7 @@ class SearchPreferencesRepository:
                 fulltime_only=bool(row["fulltime_only"]),
                 easy_apply_only=bool(row["easy_apply_only"]),
                 hide_sponsorship_restricted=bool(row["hide_sponsorship_restricted"]),
+                hide_clearance_jobs=bool(row["hide_clearance_jobs"]) if "hide_clearance_jobs" in row.keys() else True,
                 source=row["source"] or "Both",
                 theme=row["theme"] or "dark",
                 updated_at=row["updated_at"],
@@ -767,8 +788,9 @@ class SearchPreferencesRepository:
                 INSERT INTO search_preferences (
                     id, location_scope, selected_states, selected_titles,
                     date_posted_filter, remote_only, fulltime_only,
-                    easy_apply_only, hide_sponsorship_restricted, source, theme, updated_at
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    easy_apply_only, hide_sponsorship_restricted, hide_clearance_jobs,
+                    source, theme, updated_at
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(id) DO UPDATE SET
                     location_scope = excluded.location_scope,
                     selected_states = excluded.selected_states,
@@ -778,6 +800,7 @@ class SearchPreferencesRepository:
                     fulltime_only = excluded.fulltime_only,
                     easy_apply_only = excluded.easy_apply_only,
                     hide_sponsorship_restricted = excluded.hide_sponsorship_restricted,
+                    hide_clearance_jobs = excluded.hide_clearance_jobs,
                     source = excluded.source,
                     theme = excluded.theme,
                     updated_at = datetime('now')
@@ -791,6 +814,7 @@ class SearchPreferencesRepository:
                     int(preferences.fulltime_only),
                     int(preferences.easy_apply_only),
                     int(preferences.hide_sponsorship_restricted),
+                    int(preferences.hide_clearance_jobs),
                     preferences.source,
                     preferences.theme,
                 ),
@@ -817,5 +841,32 @@ class SearchPreferencesRepository:
                 (position,),
             )
             connection.commit()
+        finally:
+            connection.close()
+
+    def update_last_search_time(self, jobs_count: int = 0) -> None:
+        connection = get_connection()
+        try:
+            connection.execute(
+                "UPDATE search_preferences SET last_search_time = datetime('now'), last_jobs_count = ? WHERE id = 1",
+                (jobs_count,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def get_last_search_time(self):
+        from datetime import datetime
+        connection = get_connection()
+        try:
+            row = connection.execute(
+                "SELECT last_search_time FROM search_preferences WHERE id = 1"
+            ).fetchone()
+            if not row or not row["last_search_time"]:
+                return None
+            try:
+                return datetime.fromisoformat(row["last_search_time"])
+            except ValueError:
+                return None
         finally:
             connection.close()

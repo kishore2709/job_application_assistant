@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -38,6 +39,7 @@ TRACKER_COLUMNS = [
 
 INTERVIEW_STATUSES = {"Phone Screen", "Technical", "Final Round"}
 RESPONSE_STATUSES = {"Phone Screen", "Technical", "Final Round", "Offer", "Rejected"}
+TERMINAL_STATUSES = {"Offer", "Rejected", "Ghosted"}
 
 EXPORT_COLUMNS = [
     "Company", "Job Title", "Job URL", "Source", "Date Applied", "Status",
@@ -163,14 +165,23 @@ class TrackerTab(QWidget):
         layout.addWidget(clear_button)
         return widget
 
-    def _build_table(self) -> QTableWidget:
+    def _build_table(self) -> QStackedWidget:
         self.table = QTableWidget(0, len(TRACKER_COLUMNS))
         self.table.setHorizontalHeaderLabels(TRACKER_COLUMNS)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.currentCellChanged.connect(lambda *_: self._on_row_selected())
-        return self.table
+
+        self.empty_state_label = QLabel()
+        self.empty_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_state_label.setStyleSheet("color: #7D8590; font-size: 13px;")
+        self.empty_state_label.setWordWrap(True)
+
+        self.table_stack = QStackedWidget()
+        self.table_stack.addWidget(self.table)         # index 0
+        self.table_stack.addWidget(self.empty_state_label)  # index 1
+        return self.table_stack
 
     def _build_detail_panel(self) -> QWidget:
         panel = QWidget()
@@ -238,6 +249,19 @@ class TrackerTab(QWidget):
         save_changes_button.setProperty("primary", True)
         save_changes_button.clicked.connect(self._on_save_changes_clicked)
         layout.addWidget(save_changes_button)
+
+        self.dismiss_reminder_button = QPushButton("Dismiss Reminder")
+        self.dismiss_reminder_button.setStyleSheet("color: #f9a825;")
+        self.dismiss_reminder_button.clicked.connect(self._on_dismiss_reminder_clicked)
+        self.dismiss_reminder_button.setVisible(False)
+        layout.addWidget(self.dismiss_reminder_button)
+
+        self.remove_application_button = QPushButton("Remove Application")
+        self.remove_application_button.setStyleSheet("color: #F85149;")
+        self.remove_application_button.clicked.connect(self._on_remove_application_clicked)
+        self.remove_application_button.setVisible(False)
+        layout.addWidget(self.remove_application_button)
+
         layout.addStretch()
 
         outer_layout.addWidget(self.detail_content_widget)
@@ -308,6 +332,10 @@ class TrackerTab(QWidget):
     def _is_overdue(application) -> bool:
         if not application.follow_up_date:
             return False
+        if application.status in TERMINAL_STATUSES:
+            return False
+        if getattr(application, "is_dismissed", False):
+            return False
         try:
             follow_up = date.fromisoformat(application.follow_up_date)
         except ValueError:
@@ -342,17 +370,31 @@ class TrackerTab(QWidget):
                 self.table.setItem(row, column, QTableWidgetItem(value or ""))
             self._colorize_row(row, application)
 
+        if not applications:
+            if not self.all_applications:
+                msg = "No applications yet — search for jobs and save them to start tracking."
+            else:
+                msg = "No results match your current filters."
+            self.empty_state_label.setText(msg)
+            self.table_stack.setCurrentIndex(1)
+        else:
+            self.table_stack.setCurrentIndex(0)
+
     def _colorize_row(self, row: int, application) -> None:
         if self._is_overdue(application):
             background, text_color = "#ffb300", "#1e1e1e"
+            tooltip = f"Follow-up overdue since {application.follow_up_date}"
         else:
             background = APPLICATION_STATUS_COLORS.get(application.status, "#757575")
             text_color = "#ffffff"
+            tooltip = ""
         for column in range(self.table.columnCount()):
             item = self.table.item(row, column)
             if item is not None:
                 item.setBackground(QColor(background))
                 item.setForeground(QColor(text_color))
+                if tooltip:
+                    item.setToolTip(tooltip)
 
     # ------------------------------------------------------------------
     # Selection / detail panel
@@ -409,6 +451,9 @@ class TrackerTab(QWidget):
             self.detail_follow_up_enabled_checkbox.setChecked(False)
             self.detail_follow_up_date_input.setDate(QDate.currentDate())
 
+        self.dismiss_reminder_button.setVisible(self._is_overdue(application))
+        self.remove_application_button.setVisible(True)
+
     def _on_save_changes_clicked(self) -> None:
         if not self.selected_application:
             return
@@ -441,6 +486,30 @@ class TrackerTab(QWidget):
             if application.id == application_id:
                 self.table.setCurrentCell(row, 0)
                 return
+
+    def _on_dismiss_reminder_clicked(self) -> None:
+        if not self.selected_application or not self.selected_application.id:
+            return
+        self.application_repository.dismiss_reminder(self.selected_application.id)
+        self.refresh()
+
+    def _on_remove_application_clicked(self) -> None:
+        if not self.selected_application or not self.selected_application.id:
+            return
+        company = self.selected_application.company_name
+        reply = QMessageBox.question(
+            self,
+            "Remove Application",
+            f"Remove {company} from tracker? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.application_repository.delete(self.selected_application.id)
+            self.selected_application = None
+            self.detail_content_widget.setVisible(False)
+            self.detail_placeholder_label.setVisible(True)
+            self.remove_application_button.setVisible(False)
+            self.refresh()
 
     # ------------------------------------------------------------------
     # Add application

@@ -44,6 +44,26 @@ def _apply_migrations(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE search_preferences ADD COLUMN splitter_position INTEGER NOT NULL DEFAULT 0"
         )
+    if search_preferences_columns and "hide_clearance_jobs" not in search_preferences_columns:
+        connection.execute(
+            "ALTER TABLE search_preferences ADD COLUMN hide_clearance_jobs INTEGER NOT NULL DEFAULT 1"
+        )
+    if search_preferences_columns and "last_search_time" not in search_preferences_columns:
+        connection.execute(
+            "ALTER TABLE search_preferences ADD COLUMN last_search_time TEXT"
+        )
+    if search_preferences_columns and "last_jobs_count" not in search_preferences_columns:
+        connection.execute(
+            "ALTER TABLE search_preferences ADD COLUMN last_jobs_count INTEGER NOT NULL DEFAULT 0"
+        )
+
+    applications_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(applications)")
+    }
+    if applications_columns and "is_dismissed" not in applications_columns:
+        connection.execute(
+            "ALTER TABLE applications ADD COLUMN is_dismissed INTEGER NOT NULL DEFAULT 0"
+        )
 
     profile_settings_columns = {
         row["name"] for row in connection.execute("PRAGMA table_info(profile_settings)")

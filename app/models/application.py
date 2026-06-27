@@ -17,6 +17,7 @@ class Application:
     recruiter_contact: str = ""
     notes: str = ""
     follow_up_date: str = ""
+    is_dismissed: bool = False
     id: int | None = None
     created_at: str = ""
     updated_at: str = ""

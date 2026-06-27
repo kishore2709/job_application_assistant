@@ -1,60 +1,38 @@
 # Job Hunt Assistant
 
-A desktop job application assistant built with PyQt6 and SQLite.
+A desktop app to streamline your job search — search across LinkedIn and job boards, score each role against your resume with AI, tailor your resume per application, and track every application in one place.
 
-## Phase 1 scope
+Built with Python, PyQt6, SQLite, and Playwright.
 
-- Dark-mode main window with four tabs: Search, Tracker, Resumes, Settings
-- Fully functional Settings tab: profile, target roles, blacklisted companies,
-  default resume upload
-- SQLite database (`data/app.db`) with the full schema for profile, target
-  roles, blacklist, resumes, jobs, applications, and follow-up reminders
+---
 
-## Phase 2 scope
+## Prerequisites
 
-- Resume upload/replace from Settings, backed by the `resumes` table
-- Resumes tab: list resumes, preview extracted DOCX text, set default, delete
+- Python 3.11+
+- macOS (Playwright browser automation and system tray are macOS-tested)
 
-## Phase 3 scope
-
-- Search tab: job title (pre-filled from active target roles) + location +
-  source (LinkedIn/JSearch/Both) + filters (remote, full-time, posted within
-  7 days, Easy Apply), results table, job detail panel, Load More
-- `app/services/job_search_service.py`: orchestrates the search, filters out
-  blacklisted companies and (when "Full-time only" is checked) contract/C2C/1099
-  roles, and saves results to the `jobs` table (deduped by URL — existing rows
-  are updated, not duplicated)
-- `automation/browser_manager.py` + `automation/linkedin_helper.py`: Playwright-based
-  LinkedIn search in a visible browser (human-like delays, pauses for manual
-  CAPTCHA/login completion — never bypasses either)
-- `automation/jsearch_helper.py`: calls the [JSearch API](https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch)
-  (RapidAPI), which legally aggregates LinkedIn, Indeed, Glassdoor, and other
-  boards in one API call — no scraping, no CAPTCHA. We dropped direct Indeed
-  scraping after running into an unsolvable Cloudflare CAPTCHA loop; JSearch
-  replaces it as the second source. Requires a free RapidAPI account + a
-  `RAPIDAPI_KEY` in `.env` (free tier: 200 requests/month) — if it's missing,
-  the app shows a message telling you where to get one instead of failing silently.
-- "Save to Tracker" creates an `applications` row linked to the job and your
-  default resume
-- The browser uses a persistent profile at `data/browser_profile/` (cookies,
-  local storage) so logging into LinkedIn once carries over to future
-  searches. The app never stores your credentials itself — only the browser's
-  own session data, exactly like a normal Chrome profile. Delete that folder
-  any time to fully log out / switch accounts.
+---
 
 ## Setup
 
 ```bash
+# 1. Create and activate a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
+
+# 2. Install dependencies
 pip install -r requirements.txt
-playwright install chromium   # downloads the browser Playwright drives
-cp .env.example .env  # then fill in ANTHROPIC_API_KEY and RAPIDAPI_KEY
+
+# 3. Download the Playwright browser (used for LinkedIn search)
+playwright install chromium
+
+# 4. Copy the environment file and fill in your API keys
+cp .env.example .env
 ```
 
-To enable JSearch: create a free account at [rapidapi.com](https://rapidapi.com),
-subscribe to the [JSearch API](https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch)
-free tier, and put your key in `RAPIDAPI_KEY` in `.env`.
+Edit `.env` and set the keys you want to use (all are optional — see below).
+
+---
 
 ## Run
 
@@ -62,18 +40,114 @@ free tier, and put your key in `RAPIDAPI_KEY` in `.env`.
 python main.py
 ```
 
-## Project layout
+The app starts minimized to the system tray on close. Click the **JH** menu bar icon to restore it.
+
+---
+
+## API Keys
+
+All AI features are optional. The app works without any keys — scoring and tailoring are simply disabled.
+
+| Key | Where to get it | Used for |
+|-----|----------------|---------|
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) | Job scoring (Claude Haiku) + resume tailoring (Claude Sonnet) |
+| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com) | Alternative scoring/tailoring provider |
+| `GOOGLE_API_KEY` | [aistudio.google.com](https://aistudio.google.com) | Alternative (Gemini Flash/Pro) |
+| `RAPIDAPI_KEY` | [rapidapi.com — JSearch API](https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch) | JSearch job results (free tier: 200 req/month) |
+
+Set API keys either in `.env` **or** directly in the app under **Settings → AI Provider**.
+
+If no LLM key is configured, an amber banner appears at the top of the Search tab.
+
+---
+
+## Features
+
+### 🔍 Search
+- Search LinkedIn (via Playwright) and JSearch (via API) simultaneously
+- Filters: remote, full-time, date posted, hide sponsorship-restricted, hide security clearance roles
+- Score each job against your resume (AI) — matched/missing keywords, reasoning, recommendation
+- Tailor your resume to a specific job description (AI) — generates a modified DOCX
+
+### 📋 Tracker
+- All saved and applied jobs in one table — color-coded by status
+- Full edit panel: status, recruiter, notes, follow-up date
+- Follow-up reminders: overdue rows highlighted in amber; system tray badge shows count
+- Export to CSV or Excel
+- Remove applications with confirmation
+
+### 📄 Resumes
+- Upload a default resume (DOCX)
+- View all tailored resumes, download, or set as default
+
+### ⚙️ Settings
+- Full profile: name, email, phone, LinkedIn, GitHub, location, visa status, salary range
+- Target roles (used to pre-fill search titles)
+- Blacklisted companies (filtered out of search results)
+- AI provider + model selection for scoring and tailoring
+- API key management with connection testing
+
+### System Tray
+- App stays running in the background when the window is closed
+- 30-minute reminder checks — notification when follow-up dates are overdue
+- Startup hint if no search has been run in 12+ hours
+
+---
+
+## Easy Apply Automation (LinkedIn)
+
+For direct LinkedIn job-view URLs (`linkedin.com/jobs/view/…`), the app can attempt to auto-fill the Easy Apply form using Playwright.
+
+**Safety rules — hard-coded, never bypassed:**
+- The app never auto-submits any application
+- The app never bypasses CAPTCHAs
+- The user must click "I Have Submitted" to confirm submission
+- If automation fails at any step, the app silently falls back to opening the URL in your browser
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Cmd+1 | Switch to Search tab |
+| Cmd+2 | Switch to Tracker tab |
+| Cmd+3 | Switch to Resumes tab |
+| Cmd+4 | Switch to Settings tab |
+| Cmd+F | Focus job title input in Search |
+| Cmd+R | Run search |
+
+---
+
+## Project Layout
 
 ```
-main.py                  entry point
-app/db/                  SQLite connection, schema, repositories
-app/ui/                  PyQt6 windows and tabs
-app/services/            Claude, resume, and job search services
-app/models/              dataclasses for domain objects
-app/utils/               file helpers and constants
-automation/              Playwright browser manager + LinkedIn helper + JSearch API helper
-resumes/default/         uploaded default resume copies
-resumes/tailored/        future tailored resume output
-exports/                 future export output
-data/app.db              SQLite database (created on first run)
+main.py                    entry point + splash screen
+app/
+  db/                      SQLite connection, schema, migrations, repositories
+  ui/                      PyQt6 tabs and dialogs
+  services/                LLM, job search, scoring, resume, notification, tray
+  models/                  dataclasses (Job, Application, Resume, Score, …)
+  utils/                   constants, file helpers
+automation/
+  browser_manager.py       Playwright session management
+  linkedin_helper.py       LinkedIn search automation
+  jsearch_helper.py        JSearch API client
+  easy_apply_helper.py     LinkedIn Easy Apply form automation
+resumes/
+  default/                 uploaded default resume copies (DOCX)
+  tailored/                AI-tailored resume outputs (DOCX)
+data/
+  app.db                   SQLite database (auto-created on first run)
+  browser_profile/         Persistent Playwright browser profile (login state)
+exports/                   CSV / Excel exports
 ```
+
+---
+
+## Data Privacy
+
+- Your resume and profile data are stored locally in `data/app.db` and `resumes/`.
+- API keys are stored locally in the SQLite database (not sent anywhere except to the respective API provider).
+- The Playwright browser profile at `data/browser_profile/` stores LinkedIn session cookies — delete this folder to fully log out.
+- No data is sent to any server other than the AI provider you configure and the job search APIs.

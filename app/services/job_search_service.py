@@ -48,12 +48,37 @@ def detect_sponsorship_restriction(description: str) -> bool:
     return bool(H1B_NEGATION_PATTERN.search(description))
 
 
+CLEARANCE_PHRASES = [
+    "clearance required",
+    "security clearance",
+    "secret clearance",
+    "top secret",
+    "ts/sci",
+    "public trust",
+    "ability to obtain",
+    "active clearance",
+    "dod clearance",
+    "government clearance",
+    "clearance eligible",
+    "must have clearance",
+    "clearance needed",
+]
+
+
+def has_clearance_requirement(text: str) -> bool:
+    if not text:
+        return False
+    text_lower = text.lower()
+    return any(phrase in text_lower for phrase in CLEARANCE_PHRASES)
+
+
 @dataclass
 class SearchOutcome:
     jobs: list[Job] = field(default_factory=list)
     total_found: int = 0
     filtered_out: int = 0
     sponsorship_hidden_count: int = 0
+    clearance_hidden_count: int = 0
     error: str | None = None
     notice: str | None = None
 
@@ -122,7 +147,10 @@ def search_jobs(
     filtered_jobs, sponsorship_hidden_count = filter_sponsorship_restricted(
         filtered_jobs, filters.get("hide_sponsorship_restricted", False)
     )
-    filtered_out += sponsorship_hidden_count
+    filtered_jobs, clearance_hidden_count = filter_clearance_required(
+        filtered_jobs, filters.get("hide_clearance_jobs", True)
+    )
+    filtered_out += sponsorship_hidden_count + clearance_hidden_count
     saved_jobs = save_jobs_to_db(filtered_jobs)
 
     on_progress(f"Done — {len(saved_jobs)} jobs found")
@@ -132,6 +160,7 @@ def search_jobs(
         total_found=len(all_jobs),
         filtered_out=filtered_out,
         sponsorship_hidden_count=sponsorship_hidden_count,
+        clearance_hidden_count=clearance_hidden_count,
         error=str(search_error) if search_error else None,
         notice=notice,
     )
@@ -166,6 +195,16 @@ def filter_sponsorship_restricted(jobs: list[Job], hide_restricted: bool) -> tup
     if not hide_restricted:
         return jobs, 0
     kept = [job for job in jobs if not detect_sponsorship_restriction(job.description)]
+    return kept, len(jobs) - len(kept)
+
+
+def filter_clearance_required(jobs: list[Job], hide_clearance: bool) -> tuple[list[Job], int]:
+    if not hide_clearance:
+        return jobs, 0
+    kept = [
+        job for job in jobs
+        if not (has_clearance_requirement(job.title) or has_clearance_requirement(job.description))
+    ]
     return kept, len(jobs) - len(kept)
 
 

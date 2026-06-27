@@ -221,18 +221,28 @@ class SearchPreferencesPanel(QWidget):
         self.hide_sponsorship_checkbox.setToolTip(
             "H-1B transfer ≠ new sponsorship. Review flagged jobs before skipping."
         )
+        self.hide_clearance_checkbox = QCheckBox("Hide clearance")
+        self.hide_clearance_checkbox.setChecked(True)
+        self.hide_clearance_checkbox.setToolTip(
+            "Hide jobs that require security clearance (Top Secret, TS/SCI, etc.)"
+        )
 
         for cb in (
             self.remote_only_checkbox,
             self.full_time_only_checkbox,
             self.easy_apply_only_checkbox,
             self.hide_sponsorship_checkbox,
+            self.hide_clearance_checkbox,
         ):
             row.addWidget(cb)
 
         self.sponsorship_hidden_count_label = QLabel("")
         self.sponsorship_hidden_count_label.setStyleSheet("color: #7D8590; font-size: 11px;")
         row.addWidget(self.sponsorship_hidden_count_label)
+
+        self.clearance_hidden_count_label = QLabel("")
+        self.clearance_hidden_count_label.setStyleSheet("color: #7D8590; font-size: 11px;")
+        row.addWidget(self.clearance_hidden_count_label)
 
         row.addStretch()
         return row
@@ -351,13 +361,20 @@ class SearchPreferencesPanel(QWidget):
             "easy_apply_only": self.easy_apply_only_checkbox.isChecked(),
             "date_posted_filter": self.get_date_posted_filter(),
             "hide_sponsorship_restricted": self.hide_sponsorship_checkbox.isChecked(),
+            "hide_clearance_jobs": self.hide_clearance_checkbox.isChecked(),
         }
 
     def show_sponsorship_hidden_count(self, count: int) -> None:
         if count:
-            self.sponsorship_hidden_count_label.setText(f"{count} jobs hidden")
+            self.sponsorship_hidden_count_label.setText(f"{count} hidden (sponsorship)")
         else:
             self.sponsorship_hidden_count_label.setText("")
+
+    def show_clearance_hidden_count(self, count: int) -> None:
+        if count:
+            self.clearance_hidden_count_label.setText(f"{count} hidden (clearance)")
+        else:
+            self.clearance_hidden_count_label.setText("")
 
     def get_source(self) -> str:
         if self.source_linkedin_radio.isChecked():
@@ -376,6 +393,7 @@ class SearchPreferencesPanel(QWidget):
         self.full_time_only_checkbox.stateChanged.connect(self._on_changed)
         self.easy_apply_only_checkbox.stateChanged.connect(self._on_changed)
         self.hide_sponsorship_checkbox.stateChanged.connect(self._on_changed)
+        self.hide_clearance_checkbox.stateChanged.connect(self._on_changed)
         self.source_linkedin_radio.toggled.connect(self._on_changed)
         self.source_jsearch_radio.toggled.connect(self._on_changed)
         self.source_both_radio.toggled.connect(self._on_changed)
@@ -395,6 +413,7 @@ class SearchPreferencesPanel(QWidget):
             fulltime_only=self.full_time_only_checkbox.isChecked(),
             easy_apply_only=self.easy_apply_only_checkbox.isChecked(),
             hide_sponsorship_restricted=self.hide_sponsorship_checkbox.isChecked(),
+            hide_clearance_jobs=self.hide_clearance_checkbox.isChecked(),
             source=self.get_source(),
             theme=self._current_theme,
         )
@@ -418,6 +437,7 @@ class SearchPreferencesPanel(QWidget):
             titles_were_empty = not preferences.selected_titles
             self._current_theme = preferences.theme
             self.hide_sponsorship_checkbox.setChecked(preferences.hide_sponsorship_restricted)
+            self.hide_clearance_checkbox.setChecked(preferences.hide_clearance_jobs)
 
             if preferences.location_scope == LOCATION_SCOPE_STATES:
                 self.location_states_radio.setChecked(True)

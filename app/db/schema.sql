@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS applications (
     recruiter_contact TEXT,
     notes TEXT,
     follow_up_date TEXT,
+    is_dismissed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -116,6 +117,9 @@ CREATE TABLE IF NOT EXISTS search_preferences (
     fulltime_only INTEGER NOT NULL DEFAULT 1,
     easy_apply_only INTEGER NOT NULL DEFAULT 0,
     hide_sponsorship_restricted INTEGER NOT NULL DEFAULT 0,
+    hide_clearance_jobs INTEGER NOT NULL DEFAULT 1,
+    last_search_time TEXT,
+    last_jobs_count INTEGER NOT NULL DEFAULT 0,
     source TEXT NOT NULL DEFAULT 'Both',
     theme TEXT NOT NULL DEFAULT 'dark',
     splitter_position INTEGER NOT NULL DEFAULT 0,

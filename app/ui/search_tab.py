@@ -1,12 +1,15 @@
 import json
 import shutil
 import time
+import webbrowser
 from datetime import date
 
 from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QDesktopServices, QFont
 from PyQt6.QtWidgets import (
+    QDialog,
     QFileDialog,
+    QFrame,
     QGraphicsDropShadowEffect,
     QGroupBox,
     QHBoxLayout,
@@ -42,10 +45,18 @@ from app.services.llm_service import (
 )
 from app.services.resume_service import ResumeService
 from app.services.scoring_service import EmptyJobDescriptionError, get_cached_score, score_job
+from app.services.application_service import log_application
+from app.ui.apply_dialog import (
+    ApplyOptionsDialog,
+    EasyApplyProgressDialog,
+    EasyApplyWorker,
+    ManualApplyReminderDialog,
+)
 from app.ui.search_preferences_panel import SearchPreferencesPanel
 from app.ui.tailoring_dialog import TailoringDialog
 from app.ui.theme import SCORE_COLORS
 from automation.browser_manager import BrowserLaunchError, BrowserManager
+from automation.jsearch_helper import is_jsearch_configured
 
 RESULT_COLUMNS = ["Title", "Company", "Location", "Posted", "Score", "Status"]
 
@@ -70,6 +81,7 @@ class JobSearchWorker(QThread):
         total_found = 0
         filtered_out = 0
         sponsorship_hidden_count = 0
+        clearance_hidden_count = 0
         errors = []
         notice = None
 
@@ -90,6 +102,7 @@ class JobSearchWorker(QThread):
                 total_found += outcome.total_found
                 filtered_out += outcome.filtered_out
                 sponsorship_hidden_count += outcome.sponsorship_hidden_count
+                clearance_hidden_count += outcome.clearance_hidden_count
                 if outcome.error:
                     errors.append(outcome.error)
                 if outcome.notice and notice is None:
@@ -105,6 +118,7 @@ class JobSearchWorker(QThread):
                 total_found=total_found,
                 filtered_out=filtered_out,
                 sponsorship_hidden_count=sponsorship_hidden_count,
+                clearance_hidden_count=clearance_hidden_count,
                 error="; ".join(errors) if errors else None,
                 notice=notice,
             )
@@ -169,6 +183,9 @@ class ScoreAllWorker(QThread):
 
 
 class SearchTab(QWidget):
+    application_logged = pyqtSignal()
+    go_to_settings = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.job_repository = JobRepository()
@@ -187,12 +204,16 @@ class SearchTab(QWidget):
         self._append_mode = False
 
         self._build_ui()
+        self._refresh_api_key_banners()
 
     def _build_ui(self) -> None:
         outer_layout = QVBoxLayout(self)
 
         self.preferences_panel = SearchPreferencesPanel()
         outer_layout.addWidget(self.preferences_panel)
+
+        self.api_key_banners_widget = self._build_api_key_banners()
+        outer_layout.addWidget(self.api_key_banners_widget)
 
         self.search_button = QPushButton("Search")
         self.search_button.setFixedSize(200, 36)
@@ -231,6 +252,52 @@ class SearchTab(QWidget):
         bottom_row.addWidget(self.load_more_button)
         bottom_row.addWidget(self.score_all_button)
         outer_layout.addLayout(bottom_row)
+
+    def _build_api_key_banners(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        _BANNER_STYLE = (
+            "QFrame { background: #3D2A00; border: 1px solid #D29922;"
+            " border-radius: 6px; padding: 6px; }"
+        )
+
+        self._llm_banner = QFrame()
+        self._llm_banner.setStyleSheet(_BANNER_STYLE)
+        llm_row = QHBoxLayout(self._llm_banner)
+        llm_row.setContentsMargins(8, 4, 8, 4)
+        llm_label = QLabel("⚠ Scoring & Resume Tailoring disabled — add an API key in Settings")
+        llm_label.setStyleSheet("color: #D29922; font-size: 12px; background: transparent; border: none;")
+        llm_settings_btn = QPushButton("Go to Settings")
+        llm_settings_btn.setFixedSize(100, 24)
+        llm_settings_btn.clicked.connect(self.go_to_settings)
+        llm_row.addWidget(llm_label, 1)
+        llm_row.addWidget(llm_settings_btn)
+        self._llm_banner.hide()
+        layout.addWidget(self._llm_banner)
+
+        self._jsearch_banner = QFrame()
+        self._jsearch_banner.setStyleSheet(_BANNER_STYLE)
+        jsearch_row = QHBoxLayout(self._jsearch_banner)
+        jsearch_row.setContentsMargins(8, 4, 8, 4)
+        jsearch_label = QLabel(
+            "⚠ JSearch disabled — set RAPIDAPI_KEY in .env for 2× more job results"
+        )
+        jsearch_label.setStyleSheet("color: #D29922; font-size: 12px; background: transparent; border: none;")
+        jsearch_row.addWidget(jsearch_label, 1)
+        self._jsearch_banner.hide()
+        layout.addWidget(self._jsearch_banner)
+
+        return container
+
+    def refresh_banners(self) -> None:
+        self._refresh_api_key_banners()
+
+    def _refresh_api_key_banners(self) -> None:
+        self._llm_banner.setVisible(not self.llm_service.is_configured("scoring"))
+        self._jsearch_banner.setVisible(not is_jsearch_configured())
 
     def _build_status_row(self) -> QWidget:
         widget = QWidget()
@@ -602,6 +669,8 @@ class SearchTab(QWidget):
             f"({outcome.total_found} found across title searches, {outcome.filtered_out} filtered out)"
         )
         self.preferences_panel.show_sponsorship_hidden_count(outcome.sponsorship_hidden_count)
+        self.preferences_panel.show_clearance_hidden_count(outcome.clearance_hidden_count)
+        SearchPreferencesRepository().update_last_search_time(len(outcome.jobs))
 
     def _on_search_failed(self, message: str) -> None:
         self._reset_search_buttons()
@@ -671,6 +740,7 @@ class SearchTab(QWidget):
         self.detail_description.setPlainText(
             self._clean_text(job.description) or "(No description available.)"
         )
+        self.apply_button.setText("Apply")
         self.apply_button.setEnabled(bool(job.url))
         self.score_button.setEnabled(True)
         self.tailor_resume_button_main.setEnabled(True)
@@ -706,15 +776,120 @@ class SearchTab(QWidget):
         if self.current_application is not None:
             self.save_to_tracker_button.setText("Saved ✓")
             self.save_to_tracker_button.setEnabled(False)
-            self.mark_applied_button.setEnabled(self.current_application.status == "Saved")
+            already_applied = self.current_application.status == "Applied"
+            self.mark_applied_button.setEnabled(not already_applied)
+            if already_applied:
+                self.apply_button.setText("Applied ✓")
+                self.apply_button.setEnabled(False)
         else:
             self.save_to_tracker_button.setText("Save to Tracker")
             self.save_to_tracker_button.setEnabled(bool(job.id))
             self.mark_applied_button.setEnabled(False)
 
     def _on_apply_clicked(self) -> None:
-        if self.selected_job and self.selected_job.url:
-            QDesktopServices.openUrl(QUrl(self.selected_job.url))
+        job = self.selected_job
+        if not job or not job.url:
+            return
+
+        tailored = TailoredResumeRepository().get_by_job_id(job.id) if job.id else None
+        default_resume = self.resume_service.get_default_resume()
+
+        dialog = ApplyOptionsDialog(job, tailored, default_resume, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        resume_path = dialog.get_resume_path()
+        resume_id = dialog.get_resume_id()
+        method = dialog.get_method()
+
+        if method == "linkedin":
+            self._start_easy_apply(job, resume_path, resume_id)
+        else:
+            webbrowser.open(job.url)
+            profile = self.profile_repository.get()
+            reminder = ManualApplyReminderDialog(job, resume_path, profile, parent=self)
+            reminder.applied.connect(
+                lambda: self._log_and_finalize_application(job, resume_path, resume_id)
+            )
+            reminder.exec()
+
+    def _start_easy_apply(self, job, resume_path: str, resume_id: int | None) -> None:
+        profile = self.profile_repository.get()
+        self.easy_apply_worker = EasyApplyWorker(job.url, profile, resume_path)
+
+        self.easy_apply_progress_dialog = EasyApplyProgressDialog(parent=self)
+
+        self.easy_apply_worker.progress.connect(self.easy_apply_progress_dialog.set_progress)
+        self.easy_apply_worker.manual_step_required.connect(
+            self.easy_apply_progress_dialog.show_manual_step
+        )
+        self.easy_apply_progress_dialog.submit_btn.clicked.connect(
+            self._on_easy_apply_submitted
+        )
+        self.easy_apply_progress_dialog.cancel_btn.clicked.connect(
+            self._on_easy_apply_cancelled
+        )
+        self.easy_apply_worker.finished_apply.connect(
+            lambda status: self._on_easy_apply_finished(status, job, resume_path, resume_id)
+        )
+
+        self.easy_apply_worker.start()
+        self.easy_apply_progress_dialog.show()
+
+    def _on_easy_apply_submitted(self) -> None:
+        self.easy_apply_worker.resume()
+        self.easy_apply_progress_dialog.lock_buttons()
+
+    def _on_easy_apply_cancelled(self) -> None:
+        self.easy_apply_worker.close_browser()
+        self.easy_apply_progress_dialog.close()
+
+    def _on_easy_apply_finished(
+        self,
+        status: str,
+        job,
+        resume_path: str,
+        resume_id: int | None,
+    ) -> None:
+        self.easy_apply_progress_dialog.close()
+
+        if status == "easy_apply_started":
+            self._log_and_finalize_application(job, resume_path, resume_id)
+
+        elif status in ("easy_apply_not_found", "error"):
+            # Silently fall back to browser — show the helpful manual panel instead
+            webbrowser.open(job.url)
+            profile = self.profile_repository.get()
+            reminder = ManualApplyReminderDialog(job, resume_path, profile, parent=self)
+            reminder.applied.connect(
+                lambda: self._log_and_finalize_application(job, resume_path, resume_id)
+            )
+            reminder.exec()
+
+    def _log_and_finalize_application(
+        self,
+        job,
+        resume_path: str,
+        resume_id: int | None,
+    ) -> None:
+        log_application(job, resume_path, resume_id)
+
+        # Update Status cell in results table
+        for row in range(self.results_table.rowCount()):
+            if row < len(self.current_jobs) and self.current_jobs[row].id == job.id:
+                status_item = self.results_table.item(row, 5)
+                if status_item:
+                    status_item.setText("Applied")
+                break
+
+        # Lock apply button for this job
+        if self.selected_job and self.selected_job.id == job.id:
+            self.apply_button.setText("Applied ✓")
+            self.apply_button.setEnabled(False)
+            self.mark_applied_button.setEnabled(False)
+
+        self.status_label.setText(f"Application logged — {job.company}")
+        self.application_logged.emit()
 
     def _on_score_clicked(self) -> None:
         if not self.selected_job:
@@ -846,14 +1021,17 @@ class SearchTab(QWidget):
         self.good_resume_label.hide()
         self.score_progress_bar.show()
         self.score_status_label.setText("Scoring...")
+        self.score_button.setText("Scoring...")
 
     def _on_score_finished(self, score: JobScore) -> None:
         self.score_progress_bar.hide()
+        self.score_button.setText("Score")
         self._render_score(score)
         self._update_table_score_cell(score)
 
     def _on_score_failed(self, message: str, retryable: bool) -> None:
         self.score_progress_bar.hide()
+        self.score_button.setText("Score")
         self.score_value_label.hide()
         self.score_status_label.setText(message)
         self.retry_score_button.setVisible(retryable)
